@@ -24,7 +24,8 @@ Simple HTTP API with JSON expected as the inbound format.
 ]
 ```
 
-Data is written to parquet files for use with the query tier.
+Data is written to parquet files for use with the query tier. Parquet files reside
+within an object store, such as S3.
 
 ### Query
 
