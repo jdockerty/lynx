@@ -15,6 +15,18 @@ enum Precision {
     Microsecond
 }
 
+/// The level of persistence to run the server in, this dictates how ingested
+/// events are persisted.
+///
+/// - Local means that events are ingested and written to local parquet files.
+/// - Remote means that events are ingested and parquet files are written into
+///   an object store implementation.
+#[derive(Debug)]
+enum Persistence {
+    Local,
+    Remote // TODO
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Event {
     /// Name of the event which is being recorded.
