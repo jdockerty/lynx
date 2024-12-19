@@ -1,5 +1,7 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use arrow::array::{ArrayBuilder, ArrayRef, RecordBatch, StringBuilder, TimestampMicrosecondArray, TimestampMicrosecondBuilder, UInt64Builder};
 use axum::{
     extract::State,
     http::StatusCode,
@@ -7,6 +9,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use parquet::arrow::ArrowWriter;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -56,16 +59,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = ServerState { ingest: tx };
 
     tokio::spawn(async move {
-        let events_before_persist = std::env::var("LYNX_PERSIST_EVENTS").unwrap_or("2".to_string());
+        let events_before_persist: i64 = std::env::var("LYNX_PERSIST_EVENTS").unwrap_or("2".to_string()).parse().unwrap();
+        let mut events_buf = Vec::new();
+        let mut events_recv = 0;
         loop {
-            let mut events_recv = 0;
             match rx.recv().await {
-                Some(e) => {
+                Some(event) => {
+                    println!("{event:?}");
+                    events_buf.push(event);
                     events_recv += 1;
-                    println!("{e:?}");
-                    if events_recv == events_before_persist.parse::<i64>().unwrap() {
+                    if events_recv == events_before_persist {
+                        println!("Persisting events");
                         let now = chrono::Utc::now().timestamp_micros();
-                        std::fs::File::create_new(format!("lynx-{now}.parquet")).unwrap();
+                        let file = std::fs::File::create_new(format!("lynx-{now}.parquet")).unwrap();
+
+                        let mut names = StringBuilder::new();
+                        let mut values = UInt64Builder::new();
+                        // TODO: precision hints
+                        let mut timestamps = TimestampMicrosecondBuilder::new();
+
+                        for event in &events_buf {
+                            names.append_value(&event.name);
+                            values.append_value(event.value as u64);
+                            timestamps.append_value(event.timestamp);
+                        }
+
+                        let names = Arc::new(names.finish()) as ArrayRef;
+                        let values = Arc::new(values.finish()) as ArrayRef;
+                        let timestamps = Arc::new(timestamps.finish()) as ArrayRef;
+
+                        let batch = RecordBatch::try_from_iter(vec![("timestamp", timestamps), ("name", names), ("value", values)]).unwrap();
+                        let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
+                        writer.write(&batch).unwrap();
+                        writer.close().unwrap();
+                        events_recv = 0;
                     }
                 },
                 None => {}

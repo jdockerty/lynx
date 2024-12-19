@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+arrow = "53.3.0"
 axum = "0.7.9"
 chrono = "0.4.39"
 parquet = "53.3.0"
