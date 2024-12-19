@@ -1,6 +1,8 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
-use arrow::array::{ArrayRef, RecordBatch, StringBuilder, TimestampMicrosecondBuilder, UInt64Builder};
+use arrow::array::{
+    ArrayRef, RecordBatch, StringBuilder, TimestampMicrosecondBuilder, UInt64Builder,
+};
 use axum::{
     extract::State,
     http::StatusCode,
@@ -8,8 +10,16 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use datafusion::{
+    datasource::{file_format::parquet::ParquetFormat, listing::ListingOptions},
+    execution::context::SessionContext,
+};
 use parquet::arrow::ArrowWriter;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
+
+// In-memory tracker for persisted files.
+static PERSISTED_FILES: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -33,6 +43,8 @@ enum Persistence {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Event {
+    /// Namespace where data should be written.
+    namespace: String,
     /// Name of the event which is being recorded.
     name: String,
     /// Timestamp that the event occurred.
@@ -107,10 +119,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/api/v1/ingest", post(ingest))
+        .route("/api/v1/query", post(query))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
-        .await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
 
     axum::serve(listener, app).await?;
     Ok(())
@@ -124,4 +136,31 @@ async fn ingest(State(state): State<ServerState>, Json(event): Json<Event>) -> i
     state.ingest.send(event).await.unwrap();
 
     StatusCode::CREATED
+}
+
+#[axum::debug_handler]
+async fn query(State(state): State<ServerState>, sql: String) -> impl IntoResponse {
+    //if PERSISTED_FILES.lock().await.is_empty() {
+    //    return (StatusCode::NOT_FOUND, "No persisted files");
+    //}
+    let sql = sql.to_lowercase();
+
+    // TODO: use sqlparser for sanity check
+    let namespace = sql.split_once("from").unwrap().1.trim();
+
+    let list_opts = ListingOptions::new(Arc::new(ParquetFormat::new()));
+
+    for filename in &*PERSISTED_FILES.lock().await {
+        state
+            .query
+            .register_listing_table(namespace, filename, list_opts.clone(), None, None)
+            .await
+            .unwrap();
+    }
+
+    let result = state.query.sql(&sql).await.unwrap();
+    result.show().await.unwrap();
+
+    state.query.deregister_table(namespace).unwrap();
+    (StatusCode::CREATED, "OK")
 }
