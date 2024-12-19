@@ -58,60 +58,74 @@ struct Event {
     metadata: serde_json::Value,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ServerState {
     ingest: tokio::sync::mpsc::Sender<Event>,
+    query: Arc<SessionContext>,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(100);
 
-    let state = ServerState { ingest: tx };
-    // In-memory tracker for persisted files.
-    let mut persisted_files = Vec::new();
+    let state = ServerState {
+        ingest: tx,
+        query: Arc::new(SessionContext::new()),
+    };
 
     tokio::spawn(async move {
-        let events_before_persist: i64 = std::env::var("LYNX_PERSIST_EVENTS").unwrap_or("2".to_string()).parse().unwrap();
+        let events_before_persist: i64 = std::env::var("LYNX_PERSIST_EVENTS")
+            .unwrap_or("2".to_string())
+            .parse()
+            .unwrap();
         let mut events_buf = Vec::new();
         let mut events_recv = 0;
         loop {
-            match rx.recv().await {
-                Some(event) => {
-                    println!("{event:?}");
-                    events_buf.push(event);
-                    events_recv += 1;
-                    if events_recv == events_before_persist {
-                        println!("Persisting events");
-                        let now = chrono::Utc::now().timestamp_micros();
-                        let filename = format!("lynx-{now}.parquet");
-                        let file = std::fs::File::create_new(&filename).unwrap();
+            if let Some(event) = rx.recv().await {
+                println!("{event:?}");
+                events_buf.push(event);
+                events_recv += 1;
+                if events_recv == events_before_persist {
+                    println!("Persisting events");
+                    let now = chrono::Utc::now().timestamp_micros();
+                    let filename = format!("lynx-{now}.parquet");
+                    let file = std::fs::File::create_new(&filename).unwrap();
 
-                        let mut names = StringBuilder::new();
-                        let mut values = UInt64Builder::new();
-                        // TODO: precision hints
-                        let mut timestamps = TimestampMicrosecondBuilder::new();
+                    let mut names = StringBuilder::new();
+                    let mut namespaces = StringBuilder::new();
+                    let mut values = UInt64Builder::new();
+                    // TODO: precision hints
+                    let mut timestamps = TimestampMicrosecondBuilder::new();
 
-                        for event in &events_buf {
-                            names.append_value(&event.name);
-                            values.append_value(event.value as u64);
-                            timestamps.append_value(event.timestamp);
-                        }
-
-                        let names = Arc::new(names.finish()) as ArrayRef;
-                        let values = Arc::new(values.finish()) as ArrayRef;
-                        let timestamps = Arc::new(timestamps.finish()) as ArrayRef;
-
-                        let batch = RecordBatch::try_from_iter(vec![("timestamp", timestamps), ("name", names), ("value", values)]).unwrap();
-                        let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
-                        writer.write(&batch).unwrap();
-                        writer.close().unwrap();
-                        persisted_files.push(filename);
-                        events_recv = 0;
-                        events_buf.clear();
+                    for event in &events_buf {
+                        names.append_value(&event.name);
+                        values.append_value(event.value as u64);
+                        timestamps.append_value(event.timestamp);
+                        namespaces.append_value(&event.namespace);
                     }
-                },
-                None => {}
+
+                    let names = Arc::new(names.finish()) as ArrayRef;
+                    let namespaces = Arc::new(namespaces.finish()) as ArrayRef;
+                    let values = Arc::new(values.finish()) as ArrayRef;
+                    let timestamps = Arc::new(timestamps.finish()) as ArrayRef;
+
+                    let batch = RecordBatch::try_from_iter(vec![
+                        ("timestamp", timestamps),
+                        ("name", names),
+                        ("value", values),
+                        ("namespace", namespaces),
+                    ])
+                    .unwrap();
+                    let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
+                    writer.write(&batch).unwrap();
+                    writer.close().unwrap();
+                    {
+                        let files = &mut PERSISTED_FILES.lock().await;
+                        files.push(filename);
+                    }
+                    events_recv = 0;
+                    events_buf.clear();
+                }
             }
         }
     });
