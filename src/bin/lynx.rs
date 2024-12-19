@@ -1,7 +1,6 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use arrow::array::{ArrayBuilder, ArrayRef, RecordBatch, StringBuilder, TimestampMicrosecondArray, TimestampMicrosecondBuilder, UInt64Builder};
+use arrow::array::{ArrayRef, RecordBatch, StringBuilder, TimestampMicrosecondBuilder, UInt64Builder};
 use axum::{
     extract::State,
     http::StatusCode,
@@ -57,6 +56,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(100);
 
     let state = ServerState { ingest: tx };
+    // In-memory tracker for persisted files.
+    let mut persisted_files = Vec::new();
 
     tokio::spawn(async move {
         let events_before_persist: i64 = std::env::var("LYNX_PERSIST_EVENTS").unwrap_or("2".to_string()).parse().unwrap();
@@ -71,7 +72,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if events_recv == events_before_persist {
                         println!("Persisting events");
                         let now = chrono::Utc::now().timestamp_micros();
-                        let file = std::fs::File::create_new(format!("lynx-{now}.parquet")).unwrap();
+                        let filename = format!("lynx-{now}.parquet");
+                        let file = std::fs::File::create_new(&filename).unwrap();
 
                         let mut names = StringBuilder::new();
                         let mut values = UInt64Builder::new();
@@ -92,7 +94,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
                         writer.write(&batch).unwrap();
                         writer.close().unwrap();
+                        persisted_files.push(filename);
                         events_recv = 0;
+                        events_buf.clear();
                     }
                 },
                 None => {}
@@ -106,10 +110,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
-        .await
-        .unwrap();
+        .await?;
 
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app).await?;
     Ok(())
 }
 
