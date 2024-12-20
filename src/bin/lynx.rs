@@ -75,14 +75,9 @@ struct QueryHandler {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-
     let (ingest_tx, mut ingest_rx) = tokio::sync::mpsc::channel(100);
-    let (ns_updater_tx, mut ns_updater_rx) = tokio::sync::mpsc::channel(100);
-    let (catalog_updater_tx, mut catalog_updater_rx) = tokio::sync::mpsc::channel(100);
 
-    let state = ServerState {
-        ingest: ingest_tx,
-    };
+    let state = ServerState { ingest: ingest_tx };
 
     tokio::spawn(async move {
         let events_before_persist: i64 = std::env::var("LYNX_PERSIST_EVENTS")
@@ -173,12 +168,6 @@ async fn health() -> &'static str {
 
 async fn ingest(State(state): State<ServerState>, Json(event): Json<Event>) -> impl IntoResponse {
     state.ingest.send(event.clone()).await.unwrap();
-    state
-        .namespace_updater
-        .send(event.namespace.clone())
-        .await
-        .unwrap();
-
     StatusCode::CREATED
 }
 
@@ -212,7 +201,7 @@ async fn query(
                 .register_listing_table(namespace, path, list_opts.clone(), None, None)
                 .await
                 .unwrap();
-            handler.ctx.sql(&sql).await.unwrap().show().await.unwrap();
+            handler.ctx.sql(sql).await.unwrap().show().await.unwrap();
             // TODO: Deregistering after every request seems very wasteful
             handler.ctx.deregister_table(namespace).unwrap();
         }
