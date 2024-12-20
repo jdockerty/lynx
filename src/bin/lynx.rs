@@ -1,4 +1,7 @@
-use std::sync::{Arc, LazyLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, LazyLock},
+};
 
 use arrow::array::{
     ArrayRef, RecordBatch, StringBuilder, TimestampMicrosecondBuilder, UInt64Builder,
@@ -19,9 +22,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 // In-memory tracker for persisted files.
-static PERSISTED_FILES: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+static PERSISTED_FILES: LazyLock<Arc<Mutex<HashMap<String, QueryHandler>>>> =
+    LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Precision {
     Nanosecond,
@@ -41,7 +45,7 @@ enum Persistence {
     Remote, // TODO
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Event {
     /// Namespace where data should be written.
     namespace: String,
@@ -61,16 +65,23 @@ struct Event {
 #[derive(Clone)]
 struct ServerState {
     ingest: tokio::sync::mpsc::Sender<Event>,
-    query: Arc<SessionContext>,
+}
+
+#[derive(Clone)]
+struct QueryHandler {
+    ctx: Arc<SessionContext>,
+    files: Vec<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+
+    let (ingest_tx, mut ingest_rx) = tokio::sync::mpsc::channel(100);
+    let (ns_updater_tx, mut ns_updater_rx) = tokio::sync::mpsc::channel(100);
+    let (catalog_updater_tx, mut catalog_updater_rx) = tokio::sync::mpsc::channel(100);
 
     let state = ServerState {
-        ingest: tx,
-        query: Arc::new(SessionContext::new()),
+        ingest: ingest_tx,
     };
 
     tokio::spawn(async move {
@@ -81,15 +92,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut events_buf = Vec::new();
         let mut events_recv = 0;
         loop {
-            if let Some(event) = rx.recv().await {
+            if let Some(event) = ingest_rx.recv().await {
                 println!("{event:?}");
-                events_buf.push(event);
+                events_buf.push(event.clone());
                 events_recv += 1;
                 if events_recv == events_before_persist {
                     println!("Persisting events");
+                    let path = format!("/tmp/lynx/{}", event.namespace);
+
+                    if !std::fs::exists(&path).unwrap() {
+                        std::fs::create_dir_all(&path).unwrap();
+                    }
+
                     let now = chrono::Utc::now().timestamp_micros();
                     let filename = format!("lynx-{now}.parquet");
-                    let file = std::fs::File::create_new(&filename).unwrap();
+                    let file = std::fs::File::create_new(format!("{path}/{filename}")).unwrap();
 
                     let mut names = StringBuilder::new();
                     let mut namespaces = StringBuilder::new();
@@ -121,7 +138,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     writer.close().unwrap();
                     {
                         let files = &mut PERSISTED_FILES.lock().await;
-                        files.push(filename);
+                        files
+                            .entry(event.namespace)
+                            .and_modify(|f| {
+                                f.files.push(filename.clone());
+                            })
+                            .or_insert(QueryHandler {
+                                ctx: Arc::new(SessionContext::new()),
+                                files: vec![filename],
+                            });
                     }
                     events_recv = 0;
                     events_buf.clear();
@@ -147,34 +172,52 @@ async fn health() -> &'static str {
 }
 
 async fn ingest(State(state): State<ServerState>, Json(event): Json<Event>) -> impl IntoResponse {
-    state.ingest.send(event).await.unwrap();
+    state.ingest.send(event.clone()).await.unwrap();
+    state
+        .namespace_updater
+        .send(event.namespace.clone())
+        .await
+        .unwrap();
 
     StatusCode::CREATED
 }
 
-#[axum::debug_handler]
-async fn query(State(state): State<ServerState>, sql: String) -> impl IntoResponse {
-    //if PERSISTED_FILES.lock().await.is_empty() {
-    //    return (StatusCode::NOT_FOUND, "No persisted files");
-    //}
-    let sql = sql.to_lowercase();
+#[derive(Debug, Serialize, Deserialize)]
+struct InboundQuery {
+    namespace: String,
+    sql: String,
+}
 
-    // TODO: use sqlparser for sanity check
-    let namespace = sql.split_once("from").unwrap().1.trim();
+#[axum::debug_handler]
+async fn query(
+    State(_state): State<ServerState>,
+    Json(payload): Json<InboundQuery>,
+) -> impl IntoResponse {
+    if PERSISTED_FILES.lock().await.is_empty() {
+        return (StatusCode::NOT_FOUND, "No persisted files");
+    }
+    let InboundQuery {
+        ref namespace,
+        ref sql,
+    } = payload;
 
     let list_opts = ListingOptions::new(Arc::new(ParquetFormat::new()));
 
-    for filename in &*PERSISTED_FILES.lock().await {
-        state
-            .query
-            .register_listing_table(namespace, filename, list_opts.clone(), None, None)
-            .await
-            .unwrap();
+    let files = PERSISTED_FILES.lock().await;
+    match files.get(namespace) {
+        Some(handler) => {
+            let path = format!("/tmp/lynx/{namespace}");
+            handler
+                .ctx
+                .register_listing_table(namespace, path, list_opts.clone(), None, None)
+                .await
+                .unwrap();
+            handler.ctx.sql(&sql).await.unwrap().show().await.unwrap();
+            // TODO: Deregistering after every request seems very wasteful
+            handler.ctx.deregister_table(namespace).unwrap();
+        }
+        None => println!("No ctx for {namespace}"),
     }
 
-    let result = state.query.sql(&sql).await.unwrap();
-    result.show().await.unwrap();
-
-    state.query.deregister_table(namespace).unwrap();
-    (StatusCode::CREATED, "OK")
+    (StatusCode::OK, "OK")
 }
