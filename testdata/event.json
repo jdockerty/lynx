@@ -1,4 +1,5 @@
 {
+    "namespace": "house",
     "name": "heater",
     "timestamp": 1734557462688037,
     "precision": "microsecond",
