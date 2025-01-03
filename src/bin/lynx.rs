@@ -13,7 +13,7 @@ use axum::{
 use parquet::arrow::ArrowWriter;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Precision {
     Nanosecond,
@@ -33,7 +33,7 @@ enum Persistence {
     Remote, // TODO
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Event {
     /// Namespace where data should be written.
     namespace: String,
@@ -60,8 +60,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(100);
 
     let state = ServerState { ingest: tx };
-    // In-memory tracker for persisted files.
-    let mut persisted_files = Vec::new();
 
     tokio::spawn(async move {
         let events_before_persist: i64 = std::env::var("LYNX_PERSIST_EVENTS")
@@ -69,17 +67,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .parse()
             .unwrap();
         let mut mem_events: HashMap<String, Vec<Event>> = HashMap::new();
-        let mut events_recv = 0;
         loop {
             if let Some(event) = rx.recv().await {
                 println!("{event:?}");
-                mem_events
+                let in_mem_event = mem_events
                     .entry(event.namespace.clone())
-                    .and_modify(|f| f.push(event))
+                    .and_modify(|f| f.push(event.clone()))
                     .or_default();
-                events_recv += 1;
-                if events_recv == events_before_persist {
-                    println!("Persisting events");
+
+                if in_mem_event.len() == events_before_persist as usize {
+                    println!("Persisting events for {}", event.namespace);
                     for (namespace, events) in &mem_events {
                         let path = format!("/tmp/lynx/{namespace}");
 
@@ -115,9 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
                         writer.write(&batch).unwrap();
                         writer.close().unwrap();
-                        persisted_files.push(filename);
                     }
-                    events_recv = 0;
                     mem_events.clear();
                 }
             }
