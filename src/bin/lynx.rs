@@ -25,16 +25,22 @@ struct ServerState {
     ingest: PersistHandle,
 }
 
+impl ServerState {
+    pub fn new(max_events: i64) -> Self {
+        Self {
+            ingest: PersistHandle::new(max_events),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let events_before_persist: i64 = std::env::var("LYNX_PERSIST_EVENTS")
         .unwrap_or("2".to_string())
         .parse()
         .unwrap();
-    let persist_handle = PersistHandle::new(events_before_persist);
-    let state = ServerState {
-        ingest: persist_handle,
-    };
+
+    let state = ServerState::new(events_before_persist);
 
     let app = Router::new()
         .route("/health", get(health))
