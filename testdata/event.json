@@ -1,6 +1,6 @@
 {
     "namespace": "house",
-    "name": "temp-change",
+    "name": "heater",
     "timestamp": 1734557462688037,
     "precision": "microsecond",
     "value": 1,
