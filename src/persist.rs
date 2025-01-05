@@ -31,11 +31,13 @@ impl PersistHandle {
 pub struct PersistActor {
     max_events: i64,
     event_receiver: Receiver<Event>,
+    events: HashMap<String, Vec<Event>>,
 }
 
 impl PersistActor {
     pub fn new(max_events: i64, event_receiver: Receiver<Event>) -> Self {
         Self {
+            events: HashMap::new(),
             max_events,
             event_receiver,
         }
@@ -43,16 +45,16 @@ impl PersistActor {
 }
 
 pub async fn run_persist_actor(mut actor: PersistActor) {
-    let mut mem_events: HashMap<String, Vec<Event>> = HashMap::new();
     while let Some(event) = actor.event_receiver.recv().await {
-        let in_mem_event = mem_events
+        let in_mem_event = actor
+            .events
             .entry(event.namespace.clone())
             .and_modify(|f| f.push(event.clone()))
             .or_insert_with(|| vec![event.clone()]);
 
         if in_mem_event.len() == actor.max_events as usize {
             println!("Persisting events for {}", event.namespace);
-            for (namespace, events) in &mem_events {
+            for (namespace, events) in &actor.events {
                 let path = format!("/tmp/lynx/{namespace}");
 
                 if !std::fs::exists(&path).unwrap() {
@@ -88,7 +90,7 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
                 writer.write(&batch).unwrap();
                 writer.close().unwrap();
             }
-            mem_events.clear();
+            actor.events.clear();
         }
     }
 }
