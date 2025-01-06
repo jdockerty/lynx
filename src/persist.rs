@@ -4,8 +4,12 @@ use std::sync::Arc;
 use arrow::array::{
     ArrayRef, RecordBatch, StringBuilder, TimestampMicrosecondBuilder, UInt64Builder,
 };
+use datafusion::execution::context::SessionContext;
 use parquet::arrow::ArrowWriter;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::{
+    mpsc::{Receiver, Sender},
+    Mutex,
+};
 
 use crate::event::Event;
 
@@ -15,9 +19,9 @@ pub struct PersistHandle {
 }
 
 impl PersistHandle {
-    pub fn new(max_events: i64) -> Self {
+    pub fn new(files: Arc<Mutex<HashMap<String, SessionContext>>>, max_events: i64) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(100);
-        let actor = PersistActor::new(max_events, rx);
+        let actor = PersistActor::new(max_events, rx, files);
         tokio::spawn(run_persist_actor(actor));
 
         Self { events_queue: tx }
@@ -32,11 +36,17 @@ pub struct PersistActor {
     max_events: i64,
     event_receiver: Receiver<Event>,
     events: HashMap<String, Vec<Event>>,
+    files: Arc<Mutex<HashMap<String, SessionContext>>>,
 }
 
 impl PersistActor {
-    pub fn new(max_events: i64, event_receiver: Receiver<Event>) -> Self {
+    pub fn new(
+        max_events: i64,
+        event_receiver: Receiver<Event>,
+        files: Arc<Mutex<HashMap<String, SessionContext>>>,
+    ) -> Self {
         Self {
+            files,
             events: HashMap::new(),
             max_events,
             event_receiver,
@@ -89,6 +99,12 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
                 let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
                 writer.write(&batch).unwrap();
                 writer.close().unwrap();
+                actor
+                    .files
+                    .lock()
+                    .await
+                    .entry(event.namespace.clone())
+                    .or_insert_with(|| SessionContext::new());
             }
             actor.events.clear();
         }

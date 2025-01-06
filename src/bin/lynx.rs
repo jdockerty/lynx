@@ -16,10 +16,6 @@ use tokio::sync::Mutex;
 
 use lynx::{event::Event, persist::PersistHandle};
 
-// In-memory tracker for persisted files.
-pub static PERSISTED_FILES: LazyLock<Arc<Mutex<HashMap<String, QueryHandler>>>> =
-    LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
-
 /// The level of persistence to run the server in, this dictates how ingested
 /// events are persisted.
 ///
@@ -33,22 +29,19 @@ enum Persistence {
     Remote, // TODO
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ServerState {
     ingest: PersistHandle,
+    files: Arc<Mutex<HashMap<String, SessionContext>>>,
 }
 
 impl ServerState {
-    pub fn new(max_events: i64) -> Self {
+    pub fn new(files: Arc<Mutex<HashMap<String, SessionContext>>>, max_events: i64) -> Self {
         Self {
-            ingest: PersistHandle::new(max_events),
+            files: Arc::clone(&files),
+            ingest: PersistHandle::new(files, max_events),
         }
     }
-}
-
-#[derive(Clone)]
-pub struct QueryHandler {
-    ctx: Arc<SessionContext>,
 }
 
 #[tokio::main]
@@ -58,7 +51,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()
         .unwrap();
 
-    let state = ServerState::new(events_before_persist);
+    let files = Arc::new(Mutex::new(HashMap::new()));
+    let state = ServerState::new(files, events_before_persist);
 
     let app = Router::new()
         .route("/health", get(health))
@@ -92,12 +86,9 @@ struct InboundQuery {
 
 #[axum::debug_handler]
 async fn query(
-    State(_state): State<ServerState>,
+    State(state): State<ServerState>,
     Json(payload): Json<InboundQuery>,
 ) -> impl IntoResponse {
-    if PERSISTED_FILES.lock().await.is_empty() {
-        return (StatusCode::NOT_FOUND, "No persisted files");
-    }
     let InboundQuery {
         ref namespace,
         ref sql,
@@ -105,20 +96,19 @@ async fn query(
 
     let list_opts = ListingOptions::new(Arc::new(ParquetFormat::new()));
 
-    let files = PERSISTED_FILES.lock().await;
-    match files.get(namespace) {
-        Some(handler) => {
+    match state.files.lock().await.get(namespace) {
+        Some(ctx) => {
             let path = format!("/tmp/lynx/{namespace}");
-            handler
-                .ctx
-                .register_listing_table(namespace, path, list_opts.clone(), None, None)
+            ctx.register_listing_table(namespace, path, list_opts.clone(), None, None)
                 .await
                 .unwrap();
-            handler.ctx.sql(sql).await.unwrap().show().await.unwrap();
+            ctx.sql(sql).await.unwrap().show().await.unwrap();
             // TODO: Deregistering after every request seems very wasteful
-            handler.ctx.deregister_table(namespace).unwrap();
+            ctx.deregister_table(namespace).unwrap();
         }
-        None => println!("No ctx for {namespace}"),
+        None => {
+            return (StatusCode::NOT_FOUND, "No persisted files");
+        }
     }
 
     (StatusCode::OK, "OK")
