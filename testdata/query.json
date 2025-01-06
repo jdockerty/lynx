@@ -1,4 +1,4 @@
 {
     "namespace": "house",
-    "sql": "SELECT DISTINCT * from house WHERE value = '1'"
+    "sql": "SELECT * from house"
 }

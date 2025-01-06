@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::LazyLock;
 
 use axum::{
     extract::State,
