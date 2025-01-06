@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::sync::Arc;
+use std::{collections::HashMap, path::PathBuf};
 
 use axum::{
     extract::State,
@@ -35,10 +35,14 @@ struct ServerState {
 }
 
 impl ServerState {
-    pub fn new(files: Arc<Mutex<HashMap<String, SessionContext>>>, max_events: i64) -> Self {
+    pub fn new(
+        files: Arc<Mutex<HashMap<String, SessionContext>>>,
+        max_events: i64,
+        persist_path: PathBuf,
+    ) -> Self {
         Self {
             files: Arc::clone(&files),
-            ingest: PersistHandle::new(files, max_events),
+            ingest: PersistHandle::new(files, persist_path, max_events),
         }
     }
 }
@@ -50,8 +54,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()
         .unwrap();
 
+    let persist_path = std::env::var("LYNX_PERSIST_PATH").unwrap_or("/tmp".to_string());
+
     let files = Arc::new(Mutex::new(HashMap::new()));
-    let state = ServerState::new(files, events_before_persist);
+    let state = ServerState::new(files, events_before_persist, persist_path.into());
 
     let app = Router::new()
         .route("/health", get(health))

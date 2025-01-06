@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::sync::Arc;
+use std::{collections::HashMap, path::PathBuf};
 
 use arrow::array::{
     ArrayRef, RecordBatch, StringBuilder, TimestampMicrosecondBuilder, UInt64Builder,
@@ -19,9 +19,13 @@ pub struct PersistHandle {
 }
 
 impl PersistHandle {
-    pub fn new(files: Arc<Mutex<HashMap<String, SessionContext>>>, max_events: i64) -> Self {
+    pub fn new(
+        files: Arc<Mutex<HashMap<String, SessionContext>>>,
+        persist_path: PathBuf,
+        max_events: i64,
+    ) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(100);
-        let actor = PersistActor::new(max_events, rx, files);
+        let actor = PersistActor::new(max_events, rx, files, persist_path);
         tokio::spawn(run_persist_actor(actor));
 
         Self { events_queue: tx }
@@ -37,6 +41,7 @@ pub struct PersistActor {
     event_receiver: Receiver<Event>,
     events: HashMap<String, Vec<Event>>,
     files: Arc<Mutex<HashMap<String, SessionContext>>>,
+    persist_path: PathBuf,
 }
 
 impl PersistActor {
@@ -44,12 +49,14 @@ impl PersistActor {
         max_events: i64,
         event_receiver: Receiver<Event>,
         files: Arc<Mutex<HashMap<String, SessionContext>>>,
+        persist_path: PathBuf,
     ) -> Self {
         Self {
             files,
             events: HashMap::new(),
             max_events,
             event_receiver,
+            persist_path,
         }
     }
 }
@@ -65,7 +72,7 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
         if in_mem_event.len() == actor.max_events as usize {
             println!("Persisting events for {}", event.namespace);
             for (namespace, events) in &actor.events {
-                let path = format!("/tmp/lynx/{namespace}");
+                let path = format!("{}/lynx/{namespace}", actor.persist_path.to_string_lossy());
 
                 if !std::fs::exists(&path).unwrap() {
                     std::fs::create_dir_all(&path).unwrap();
