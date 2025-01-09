@@ -73,6 +73,7 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
             println!("Persisting events for {}", event.namespace);
             for (namespace, events) in &actor.events {
                 let path = format!("{}/lynx/{namespace}", actor.persist_path.to_string_lossy());
+                println!("Persisting to {path}");
 
                 if !std::fs::exists(&path).unwrap() {
                     std::fs::create_dir_all(&path).unwrap();
@@ -115,5 +116,58 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
             }
             actor.events.clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::sync::Arc;
+    use std::{collections::HashMap, time::Duration};
+
+    use tempfile::TempDir;
+    use tokio::sync::Mutex;
+
+    use crate::event::Event;
+
+    use super::{run_persist_actor, PersistActor};
+
+    #[tokio::test]
+    async fn persist() {
+        let (tx, rx) = tokio::sync::mpsc::channel(10);
+        let temp_dir = TempDir::new().unwrap();
+        let files = Arc::new(Mutex::new(HashMap::new()));
+        let actor = PersistActor::new(1, rx, Arc::clone(&files), temp_dir.path().to_path_buf());
+
+        let namespace = "my_org_1".to_string();
+
+        tokio::spawn(async move {
+            run_persist_actor(actor).await;
+        });
+
+        let event = Event {
+            namespace: namespace.clone(),
+            name: "heater".to_string(),
+            timestamp: 1000,
+            value: 10,
+            precision: None,
+            metadata: serde_json::Value::Null,
+        };
+
+        tx.send(event.clone()).await.unwrap();
+
+        if let Err(_) = tokio::time::timeout(Duration::from_secs(2), async move {
+            let persist_path = temp_dir.path().join("lynx").join(namespace);
+            loop {
+                match tokio::fs::try_exists(&persist_path).await {
+                    Ok(_) => break,
+                    Err(e) => eprintln!("{e}")
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+
+        }).await {
+            panic!("Persistence did not occur");
+        }
+
     }
 }
