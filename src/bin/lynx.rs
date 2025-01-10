@@ -8,12 +8,11 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use datafusion::datasource::{file_format::parquet::ParquetFormat, listing::ListingOptions};
 use datafusion::prelude::SessionContext;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use lynx::{event::Event, persist::PersistHandle};
+use lynx::{event::Event, persist::PersistHandle, query::handle_sql};
 
 /// The level of persistence to run the server in, this dictates how ingested
 /// events are persisted.
@@ -31,6 +30,7 @@ enum Persistence {
 #[derive(Clone)]
 struct ServerState {
     ingest: PersistHandle,
+    persist_path: PathBuf,
     files: Arc<Mutex<HashMap<String, SessionContext>>>,
 }
 
@@ -42,6 +42,7 @@ impl ServerState {
     ) -> Self {
         Self {
             files: Arc::clone(&files),
+            persist_path: persist_path.clone(),
             ingest: PersistHandle::new(files, persist_path, max_events),
         }
     }
@@ -93,27 +94,10 @@ async fn query(
     State(state): State<ServerState>,
     Json(payload): Json<InboundQuery>,
 ) -> impl IntoResponse {
-    let InboundQuery {
-        ref namespace,
-        ref sql,
-    } = payload;
-
-    let list_opts = ListingOptions::new(Arc::new(ParquetFormat::new()));
-
-    match state.files.lock().await.get(namespace) {
-        Some(ctx) => {
-            let path = format!("/tmp/lynx/{namespace}");
-            ctx.register_listing_table(namespace, path, list_opts.clone(), None, None)
-                .await
-                .unwrap();
-            ctx.sql(sql).await.unwrap().show().await.unwrap();
-            // TODO: Deregistering after every request seems very wasteful
-            ctx.deregister_table(namespace).unwrap();
-        }
-        None => {
-            return (StatusCode::NOT_FOUND, "No persisted files");
-        }
-    }
-
-    (StatusCode::OK, "OK")
+    let namespace_path = &format!(
+        "{}/lynx/{}",
+        state.persist_path.to_string_lossy(),
+        &payload.namespace
+    );
+    handle_sql(state.files, payload.namespace, payload.sql, namespace_path).await
 }

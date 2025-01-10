@@ -112,7 +112,7 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
                     .lock()
                     .await
                     .entry(event.namespace.clone())
-                    .or_insert_with(|| SessionContext::new());
+                    .or_insert_with(SessionContext::new);
             }
             actor.events.clear();
         }
@@ -155,19 +155,20 @@ mod test {
 
         tx.send(event.clone()).await.unwrap();
 
-        if let Err(_) = tokio::time::timeout(Duration::from_secs(2), async move {
+        if (tokio::time::timeout(Duration::from_secs(2), async move {
             let persist_path = temp_dir.path().join("lynx").join(namespace);
             loop {
                 match tokio::fs::try_exists(&persist_path).await {
                     Ok(_) => break,
-                    Err(e) => eprintln!("{e}")
+                    Err(e) => eprintln!("{e}"),
                 }
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
-
-        }).await {
+        })
+        .await)
+            .is_err()
+        {
             panic!("Persistence did not occur");
         }
-
     }
 }
