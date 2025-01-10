@@ -89,7 +89,6 @@ struct InboundQuery {
     sql: String,
 }
 
-#[axum::debug_handler]
 async fn query(
     State(state): State<ServerState>,
     Json(payload): Json<InboundQuery>,
