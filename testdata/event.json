@@ -3,7 +3,7 @@
     "name": "heater",
     "timestamp": 1734557462688037,
     "precision": "microsecond",
-    "value": 20,
+    "value": 1,
     "metadata": {
         "units": "celsius"
     }

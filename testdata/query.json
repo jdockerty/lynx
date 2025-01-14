@@ -1,0 +1,4 @@
+{
+    "namespace": "house",
+    "sql": "SELECT * from house"
+}

@@ -1,3 +1,7 @@
+use std::sync::Arc;
+use std::{collections::HashMap, path::PathBuf};
+
+use arrow::util::pretty::print_batches;
 use axum::{
     extract::State,
     http::StatusCode,
@@ -5,7 +9,11 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use lynx::{event::Event, persist::PersistHandle};
+use datafusion::prelude::SessionContext;
+use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
+
+use lynx::{event::Event, persist::PersistHandle, query::handle_sql};
 
 /// The level of persistence to run the server in, this dictates how ingested
 /// events are persisted.
@@ -20,15 +28,23 @@ enum Persistence {
     Remote, // TODO
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ServerState {
     ingest: PersistHandle,
+    persist_path: PathBuf,
+    files: Arc<Mutex<HashMap<String, SessionContext>>>,
 }
 
 impl ServerState {
-    pub fn new(max_events: i64) -> Self {
+    pub fn new(
+        files: Arc<Mutex<HashMap<String, SessionContext>>>,
+        max_events: i64,
+        persist_path: PathBuf,
+    ) -> Self {
         Self {
-            ingest: PersistHandle::new(max_events),
+            files: Arc::clone(&files),
+            persist_path: persist_path.clone(),
+            ingest: PersistHandle::new(files, persist_path, max_events),
         }
     }
 }
@@ -40,11 +56,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()
         .unwrap();
 
-    let state = ServerState::new(events_before_persist);
+    let persist_path = std::env::var("LYNX_PERSIST_PATH").unwrap_or("/tmp".to_string());
+
+    let files = Arc::new(Mutex::new(HashMap::new()));
+    let state = ServerState::new(files, events_before_persist, persist_path.into());
 
     let app = Router::new()
         .route("/health", get(health))
         .route("/api/v1/ingest", post(ingest))
+        .route("/api/v1/query", post(query))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
@@ -62,6 +82,34 @@ async fn ingest(
     Json(event): Json<Event>,
 ) -> impl IntoResponse {
     state.ingest.handle_event(event).await;
-
     StatusCode::CREATED
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct InboundQuery {
+    namespace: String,
+    sql: String,
+}
+
+async fn query(
+    State(state): State<ServerState>,
+    Json(payload): Json<InboundQuery>,
+) -> impl IntoResponse {
+    let namespace_path = &format!(
+        "{}/lynx/{}",
+        state.persist_path.to_string_lossy(),
+        &payload.namespace
+    );
+    if let Some(record_batches) =
+        handle_sql(state.files, &payload.namespace, payload.sql, namespace_path).await
+    {
+        // TODO: remove the print at a later date.
+        let _ = print_batches(&record_batches);
+        (StatusCode::OK, "OK".to_string())
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            format!("No persisted files within {}", payload.namespace),
+        )
+    }
 }
