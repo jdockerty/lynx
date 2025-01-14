@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::{collections::HashMap, path::PathBuf};
 
+use arrow::util::pretty::print_batches;
 use axum::{
     extract::State,
     http::StatusCode,
@@ -99,5 +100,16 @@ async fn query(
         state.persist_path.to_string_lossy(),
         &payload.namespace
     );
-    handle_sql(state.files, payload.namespace, payload.sql, namespace_path).await
+    if let Some(record_batches) =
+        handle_sql(state.files, &payload.namespace, payload.sql, namespace_path).await
+    {
+        // TODO: remove the print at a later date.
+        let _ = print_batches(&record_batches);
+        (StatusCode::OK, "OK".to_string())
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            format!("No persisted files within {}", payload.namespace),
+        )
+    }
 }

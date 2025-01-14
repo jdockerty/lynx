@@ -1,43 +1,42 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use arrow::array::RecordBatch;
 use datafusion::datasource::{file_format::parquet::ParquetFormat, listing::ListingOptions};
 use datafusion::prelude::SessionContext;
 use tokio::sync::Mutex;
 
 pub async fn handle_sql(
     files: Arc<Mutex<HashMap<String, SessionContext>>>,
-    namespace: String,
+    namespace: &str,
     sql: String,
     namespace_path: &str,
-) -> impl IntoResponse {
+) -> Option<Vec<RecordBatch>> {
     let list_opts = ListingOptions::new(Arc::new(ParquetFormat::new()));
 
-    match files.lock().await.get(&namespace) {
+    match files.lock().await.get(namespace) {
         Some(ctx) => {
-            ctx.register_listing_table(&namespace, namespace_path, list_opts.clone(), None, None)
+            ctx.register_listing_table(namespace, namespace_path, list_opts.clone(), None, None)
                 .await
                 .unwrap();
-            ctx.sql(&sql).await.unwrap().show().await.unwrap();
+            let df = ctx.sql(&sql).await.unwrap();
+
+            let batches = df.collect().await.unwrap();
             // TODO: Deregistering after every request seems very wasteful
-            ctx.deregister_table(&namespace).unwrap();
+            ctx.deregister_table(namespace).unwrap();
+            Some(batches)
         }
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                format!("No persisted files within {namespace}"),
-            );
-        }
+        None => None,
     }
-    (StatusCode::OK, "OK".to_string())
 }
 
 #[cfg(test)]
 mod test {
     use std::{collections::HashMap, sync::Arc};
 
+    use arrow::array::{ArrayRef, Int64Array, RecordBatch};
+    use datafusion::{assert_batches_eq, execution::context::SessionContext};
+    use parquet::arrow::ArrowWriter;
     use tempfile::TempDir;
     use tokio::sync::Mutex;
 
