@@ -49,13 +49,49 @@ mod test {
         let namespace_path = &persist_path.path().join("lynx").join(namespace);
 
         let files = Arc::new(Mutex::new(HashMap::new()));
+        let ctx = SessionContext::new();
 
-        handle_sql(
+        std::fs::create_dir_all(namespace_path).expect("Can create directory for test");
+
+        let temp_file = tempfile::Builder::new()
+            .prefix("query-")
+            .suffix(".parquet")
+            .tempfile_in(namespace_path)
+            .unwrap();
+
+        let col = Arc::new(Int64Array::from_iter_values([1, 2, 3])) as ArrayRef;
+        let to_write = RecordBatch::try_from_iter([("col", col)]).unwrap();
+        // NOTE: the temp file must be passed as a reference, otherwise it will
+        // be moved and eventually dropped on writer close, causing it to be deleted.
+        let mut writer = ArrowWriter::try_new(&temp_file, to_write.schema(), None).unwrap();
+        writer.write(&to_write).unwrap();
+        writer.close().unwrap();
+
+        files.lock().await.insert(namespace.to_string(), ctx);
+
+        for f in std::fs::read_dir(namespace_path).unwrap() {
+            println!("{f:?}");
+        }
+        let batches = handle_sql(
             files,
-            namespace.to_string(),
+            namespace,
             format!("SELECT * FROM {namespace}"),
             &namespace_path.to_string_lossy(),
         )
-        .await;
+        .await
+        .expect("Some batches exist for the test");
+
+        #[rustfmt::skip]
+        let expected = vec![
+            "+-----+",
+            "| col |",
+            "+-----+",
+            "| 1   |",
+            "| 2   |",
+            "| 3   |",
+            "+-----+",
+        ];
+
+        assert_batches_eq!(expected, &batches);
     }
 }
