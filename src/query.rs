@@ -82,7 +82,7 @@ mod test {
         .expect("Some batches exist for the test");
 
         #[rustfmt::skip]
-        let expected = vec![
+        assert_batches_eq!([
             "+-----+",
             "| col |",
             "+-----+",
@@ -90,8 +90,6 @@ mod test {
             "| 2   |",
             "| 3   |",
             "+-----+",
-        ];
-
-        assert_batches_eq!(expected, &batches);
+        ], &batches);
     }
 }
