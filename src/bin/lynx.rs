@@ -1,7 +1,8 @@
 use std::sync::Arc;
 use std::{collections::HashMap, path::PathBuf};
 
-use arrow::util::pretty::print_batches;
+use arrow::util::pretty::pretty_format_batches;
+use axum::http::HeaderMap;
 use axum::{
     extract::State,
     http::StatusCode,
@@ -15,6 +16,8 @@ use tokio::sync::Mutex;
 
 use lynx::{event::Event, persist::PersistHandle, query::handle_sql};
 
+const LYNX_FORMAT_HEADER: &str = "X-Lynx-Format";
+
 /// The level of persistence to run the server in, this dictates how ingested
 /// events are persisted.
 ///
@@ -26,6 +29,23 @@ use lynx::{event::Event, persist::PersistHandle, query::handle_sql};
 enum Persistence {
     Local,
     Remote, // TODO
+}
+
+#[derive(Debug, Clone, Default)]
+enum QueryFormat {
+    #[default]
+    Json,
+    Pretty,
+}
+
+impl From<&str> for QueryFormat {
+    fn from(value: &str) -> Self {
+        match value {
+            "json" => QueryFormat::Json,
+            "pretty" => QueryFormat::Pretty,
+            _ => QueryFormat::Json, // Default to JSON
+        }
+    }
 }
 
 #[derive(Clone)]
