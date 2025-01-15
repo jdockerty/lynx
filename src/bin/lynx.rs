@@ -112,9 +112,10 @@ struct InboundQuery {
 }
 
 async fn query(
+    headers: HeaderMap,
     State(state): State<ServerState>,
     Json(payload): Json<InboundQuery>,
-) -> impl IntoResponse {
+) -> (StatusCode, impl IntoResponse) {
     let namespace_path = &format!(
         "{}/lynx/{}",
         state.persist_path.to_string_lossy(),
@@ -123,9 +124,30 @@ async fn query(
     if let Some(record_batches) =
         handle_sql(state.files, &payload.namespace, payload.sql, namespace_path).await
     {
-        // TODO: remove the print at a later date.
-        let _ = print_batches(&record_batches);
-        (StatusCode::OK, "OK".to_string())
+        let format = match headers.get(LYNX_FORMAT_HEADER) {
+            Some(v) => String::from_utf8_lossy(v.as_bytes())
+                .to_string()
+                .as_str()
+                .into(),
+            None => QueryFormat::Json,
+        };
+
+        match format {
+            QueryFormat::Pretty => {
+                let output = pretty_format_batches(&record_batches).unwrap();
+                (StatusCode::OK, output.to_string())
+            }
+            QueryFormat::Json => {
+                let buf = Vec::new();
+                let mut w = arrow_json::ArrayWriter::new(buf);
+                for record in record_batches {
+                    w.write(&record).expect("Can write to buffer");
+                }
+                w.finish().expect("Can finalise buffer");
+                let json = String::from_utf8(w.into_inner()).expect("Valid JSON written");
+                (StatusCode::OK, json)
+            }
+        }
     } else {
         (
             StatusCode::NOT_FOUND,

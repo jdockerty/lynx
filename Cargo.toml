@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 arrow = "53.3.0"
+arrow-json = "53.3.0"
 axum = { version = "0.7.9", features = ["macros"] }
 chrono = "0.4.39"
 datafusion = "43.0.0"
