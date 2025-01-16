@@ -11,12 +11,11 @@ use axum::{
     Json, Router,
 };
 use datafusion::prelude::SessionContext;
-use serde::{Deserialize, Serialize};
+use lynx::query::{InboundQuery, QueryFormat};
+use lynx::LYNX_FORMAT_HEADER;
 use tokio::sync::Mutex;
 
 use lynx::{event::Event, persist::PersistHandle, query::handle_sql};
-
-const LYNX_FORMAT_HEADER: &str = "X-Lynx-Format";
 
 /// The level of persistence to run the server in, this dictates how ingested
 /// events are persisted.
@@ -29,23 +28,6 @@ const LYNX_FORMAT_HEADER: &str = "X-Lynx-Format";
 enum Persistence {
     Local,
     Remote, // TODO
-}
-
-#[derive(Debug, Clone, Default)]
-enum QueryFormat {
-    #[default]
-    Json,
-    Pretty,
-}
-
-impl From<&str> for QueryFormat {
-    fn from(value: &str) -> Self {
-        match value {
-            "json" => QueryFormat::Json,
-            "pretty" => QueryFormat::Pretty,
-            _ => QueryFormat::Json, // Default to JSON
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -77,6 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap();
 
     let persist_path = std::env::var("LYNX_PERSIST_PATH").unwrap_or("/tmp".to_string());
+    let lynx_port = std::env::var("LYNX_PORT").unwrap_or("3000".to_string());
 
     let files = Arc::new(Mutex::new(HashMap::new()));
     let state = ServerState::new(files, events_before_persist, persist_path.into());
@@ -87,7 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/v1/query", post(query))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{lynx_port}")).await?;
+    println!("Running {}", listener.local_addr().unwrap());
 
     axum::serve(listener, app).await?;
     Ok(())
@@ -105,12 +89,6 @@ async fn ingest(
     StatusCode::CREATED
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct InboundQuery {
-    namespace: String,
-    sql: String,
-}
-
 async fn query(
     headers: HeaderMap,
     State(state): State<ServerState>,
@@ -125,10 +103,7 @@ async fn query(
         handle_sql(state.files, &payload.namespace, payload.sql, namespace_path).await
     {
         let format = match headers.get(LYNX_FORMAT_HEADER) {
-            Some(v) => String::from_utf8_lossy(v.as_bytes())
-                .to_string()
-                .as_str()
-                .into(),
+            Some(v) => v.to_str().unwrap().into(),
             None => QueryFormat::Json,
         };
 
