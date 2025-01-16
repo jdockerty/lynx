@@ -145,17 +145,29 @@ async fn full_ingest() {
     lynx.ingest(&event).await;
     lynx.ingest(&event).await;
 
-    let entries = std::fs::read_dir(lynx.persist_path.path()).expect("Can read persit file");
-
-    for entry in entries {
-        let entry = entry.unwrap();
-        assert!(
-            entry.file_name().to_string_lossy().contains(".parquet"),
-            "Parquet files are persisted"
-        );
-        assert!(
-            entry.metadata().unwrap().len() > 0,
-            "Persisted file should not be blank"
-        );
-    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let namespace_path = lynx.persist_path.path().join("lynx").join("my_namespace");
+        loop {
+            match std::fs::read_dir(&namespace_path) {
+                Ok(entries) => {
+                    for entry in entries {
+                        let entry = entry.unwrap();
+                        assert!(
+                            entry.file_name().to_string_lossy().contains(".parquet"),
+                            "Parquet files are persisted"
+                        );
+                        assert!(
+                            entry.metadata().unwrap().len() > 0,
+                            "Persisted file should not be blank"
+                        );
+                    }
+                    break;
+                }
+                Err(e) => eprintln!("{e}"),
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("Persist event did not occur");
 }
