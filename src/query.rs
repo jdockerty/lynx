@@ -27,7 +27,7 @@ pub struct QueryResponse {
     pub value: i64,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, clap::ValueEnum)]
 pub enum QueryFormat {
     #[default]
     Json,

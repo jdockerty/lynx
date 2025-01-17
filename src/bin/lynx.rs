@@ -1,8 +1,11 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use lynx::server::{self, V1_INGEST_PATH, V1_QUERY_PATH};
-use reqwest::header::CONTENT_TYPE;
+use lynx::{
+    query::QueryFormat,
+    server::{self, LYNX_FORMAT_HEADER, V1_INGEST_PATH, V1_QUERY_PATH},
+};
+use reqwest::{header::CONTENT_TYPE, StatusCode};
 
 #[derive(Debug, Clone, Parser)]
 struct Cli {
@@ -24,7 +27,7 @@ enum Commands {
         events_before_persist: i64,
 
         /// Path where lynx will persist parquet files.
-        #[arg(long, env = "LYNX_PERSIST_PATH", default_value = "./")]
+        #[arg(long, env = "LYNX_PERSIST_PATH", default_value = "/tmp")]
         persist_path: PathBuf,
     },
     Write {
@@ -48,6 +51,9 @@ enum Commands {
         /// Path to a JSON file containing query information.
         #[arg(long)]
         file: PathBuf,
+
+        #[arg(long, default_value = "json")]
+        format: QueryFormat,
     },
 }
 
@@ -68,27 +74,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let json = std::fs::read(&file).unwrap();
             let client = reqwest::Client::new();
 
-            client
+            let resp = client
                 .post(format!("http://{host}:{port}/{V1_INGEST_PATH}"))
                 .header(CONTENT_TYPE, "application/json")
                 .body(json)
                 .send()
-                .await
-                .unwrap();
+                .await?;
+
+            match resp.status() {
+                StatusCode::CREATED => {}
+                code @ _ => {
+                    return Err(format!(
+                        "received unexpected response {code}, body: {}",
+                        resp.text().await.unwrap()
+                    )
+                    .into())
+                }
+            }
         }
-        Commands::Query { host, port, file } => {
-            let json = std::fs::read(&file).unwrap();
+        Commands::Query {
+            host,
+            port,
+            file,
+            format,
+        } => {
+            let json = std::fs::read(&file)?;
             let client = reqwest::Client::new();
 
-            client
+            let resp = client
                 .post(format!("http://{host}:{port}/{V1_QUERY_PATH}"))
                 .header(CONTENT_TYPE, "application/json")
+                .header(LYNX_FORMAT_HEADER, format.as_str())
                 .body(json)
                 .send()
-                .await
-                .unwrap();
+                .await?;
+
+            println!("{}", resp.text().await?);
         }
-    }
+    };
 
     Ok(())
 }
