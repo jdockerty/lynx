@@ -70,10 +70,10 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
             .or_insert_with(|| vec![event.clone()]);
 
         if in_mem_event.len() == actor.max_events as usize {
-            println!("Persisting events for {}", event.namespace);
+            eprintln!("Persisting events for {}", event.namespace);
             for (namespace, events) in &actor.events {
                 let path = format!("{}/lynx/{namespace}", actor.persist_path.to_string_lossy());
-                println!("Persisting to {path}");
+                eprintln!("Persisting to {path}");
 
                 if !std::fs::exists(&path).unwrap() {
                     std::fs::create_dir_all(&path).unwrap();

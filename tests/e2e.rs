@@ -1,24 +1,20 @@
 #![expect(dead_code)]
 
-use std::{
-    process::Command,
-    time::Duration,
-};
+use std::{process::Command, time::Duration};
 
-use assert_cmd::cargo::CommandCargoExt;
+use assert_cmd::{assert::OutputAssertExt, cargo::CommandCargoExt, output::OutputOkExt};
 use lynx::{
     event::Event,
     query::{InboundQuery, QueryFormat, QueryResponse},
+    server::{V1_INGEST_PATH, V1_QUERY_PATH},
     LYNX_FORMAT_HEADER,
 };
+use predicates::{boolean::PredicateBooleanExt, str::contains};
 use rand::Rng;
 use reqwest::{header::CONTENT_TYPE, StatusCode};
-use tempfile::TempDir;
+use tempfile::{NamedTempFile, TempDir};
 
 mod helpers;
-
-const QUERY_PATH: &str = "api/v1/query";
-const INGEST_PATH: &str = "api/v1/ingest";
 
 struct Lynx {
     process: std::process::Child,
@@ -64,6 +60,7 @@ impl Lynx {
 
         let process = Command::cargo_bin(env!("CARGO_PKG_NAME"))
             .unwrap()
+            .arg("server")
             .env("LYNX_PORT", port.to_string())
             .env("LYNX_PERSIST_PATH", persist_path.path())
             .env("LYNX_PERSIST_EVENTS", max_events.to_string())
@@ -88,7 +85,7 @@ impl Lynx {
 
         let response = self
             .client
-            .post(format!("http://127.0.0.1:{}/{INGEST_PATH}", self.port))
+            .post(format!("http://127.0.0.1:{}/{V1_INGEST_PATH}", self.port))
             .header(CONTENT_TYPE, "application/json")
             .body(json)
             .send()
@@ -108,7 +105,7 @@ impl Lynx {
 
         let response = self
             .client
-            .post(format!("http://127.0.0.1:{}/{QUERY_PATH}", self.port))
+            .post(format!("http://127.0.0.1:{}/{V1_QUERY_PATH}", self.port))
             .header(CONTENT_TYPE, "application/json")
             .header(LYNX_FORMAT_HEADER, format.as_str())
             .body(json)
@@ -151,7 +148,7 @@ async fn query_after_persist() {
                     }
                     break;
                 }
-                Err(e) => eprintln!("{e}"),
+                Err(e) => eprintln!("Unable to read query response, retrying: {e}"),
             };
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -188,7 +185,7 @@ async fn ingest_and_persist_check() {
                     }
                     break;
                 }
-                Err(e) => eprintln!("{e}"),
+                Err(e) => eprintln!("Unable to read {}, retrying: {e}", namespace_path.display()),
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -219,4 +216,49 @@ async fn persist_with_increased_counter() {
         std::fs::exists(&namespace_path).unwrap(),
         "Expected persist after 5 events"
     );
+}
+
+#[tokio::test]
+async fn cli() {
+    let lynx = Lynx::new(LynxOptions::new().with_max_events(1));
+
+    let write_input = NamedTempFile::new().unwrap();
+    let event = helpers::arbitrary_event();
+    serde_json::to_writer(&write_input, &event).unwrap();
+
+    let query_input = NamedTempFile::new().unwrap();
+    let query = InboundQuery {
+        namespace: event.namespace.clone(),
+        sql: format!("SELECT * from {}", event.namespace),
+    };
+    serde_json::to_writer(&query_input, &query).unwrap();
+
+    let _write_cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))
+        .unwrap()
+        .arg("write")
+        .arg("--port")
+        .arg(lynx.port.to_string())
+        .arg("--file")
+        .arg(write_input.path())
+        .unwrap()
+        .assert()
+        .success();
+
+    let query_output = Command::cargo_bin(env!("CARGO_PKG_NAME"))
+        .unwrap()
+        .arg("query")
+        .arg("--port")
+        .arg(lynx.port.to_string())
+        .arg("--file")
+        .arg(query_input.path())
+        .arg("--format")
+        .arg("pretty")
+        .unwrap()
+        .assert()
+        .success();
+
+    println!("{}", query_output.to_string());
+
+    query_output
+        .stdout(contains(format!("{}", event.name)).and(contains(format!("{}", event.value))));
 }

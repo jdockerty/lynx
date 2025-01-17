@@ -1,132 +1,120 @@
-use std::sync::Arc;
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
-use arrow::util::pretty::pretty_format_batches;
-use axum::http::HeaderMap;
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::{get, post},
-    Json, Router,
+use clap::{Parser, Subcommand};
+use lynx::{
+    query::QueryFormat,
+    server::{self, LYNX_FORMAT_HEADER, V1_INGEST_PATH, V1_QUERY_PATH},
 };
-use datafusion::prelude::SessionContext;
-use lynx::query::{InboundQuery, QueryFormat};
-use lynx::LYNX_FORMAT_HEADER;
-use tokio::sync::Mutex;
+use reqwest::{header::CONTENT_TYPE, StatusCode};
 
-use lynx::{event::Event, persist::PersistHandle, query::handle_sql};
-
-/// The level of persistence to run the server in, this dictates how ingested
-/// events are persisted.
-///
-/// - Local means that events are ingested and written to local parquet files.
-/// - Remote means that events are ingested and parquet files are written into
-///   an object store implementation.
-#[derive(Debug)]
-#[allow(dead_code)]
-enum Persistence {
-    Local,
-    Remote, // TODO
+#[derive(Debug, Clone, Parser)]
+struct Cli {
+    #[clap(subcommand)]
+    commands: Commands,
 }
 
-#[derive(Clone)]
-struct ServerState {
-    ingest: PersistHandle,
-    persist_path: PathBuf,
-    files: Arc<Mutex<HashMap<String, SessionContext>>>,
-}
+#[derive(Debug, Clone, Subcommand)]
+enum Commands {
+    /// Run the lynx server
+    Server {
+        #[arg(long, env = "LYNX_HOST", default_value = "127.0.0.1")]
+        host: String,
 
-impl ServerState {
-    pub fn new(
-        files: Arc<Mutex<HashMap<String, SessionContext>>>,
-        max_events: i64,
+        #[arg(long, env = "LYNX_PORT", default_value = "3000")]
+        port: u16,
+
+        /// Number of events before a persist event occurs per namespace.
+        #[arg(long, env = "LYNX_PERSIST_EVENTS", default_value = "2")]
+        events_before_persist: i64,
+
+        /// Path where lynx will persist parquet files.
+        #[arg(long, env = "LYNX_PERSIST_PATH", default_value = "/tmp")]
         persist_path: PathBuf,
-    ) -> Self {
-        Self {
-            files: Arc::clone(&files),
-            persist_path: persist_path.clone(),
-            ingest: PersistHandle::new(files, persist_path, max_events),
-        }
-    }
+    },
+    /// Write data to lynx
+    Write {
+        #[arg(long, env = "LYNX_HOST", default_value = "127.0.0.1")]
+        host: String,
+
+        #[arg(long, env = "LYNX_PORT", default_value = "3000")]
+        port: u16,
+
+        /// Path to a JSON file containing event(s) to ingest.
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Query data from lynx
+    Query {
+        #[arg(long, env = "LYNX_HOST", default_value = "127.0.0.1")]
+        host: String,
+
+        #[arg(long, env = "LYNX_PORT", default_value = "3000")]
+        port: u16,
+
+        /// Path to a JSON file containing query information.
+        #[arg(long)]
+        file: PathBuf,
+
+        #[arg(long, default_value = "json")]
+        format: QueryFormat,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let events_before_persist: i64 = std::env::var("LYNX_PERSIST_EVENTS")
-        .unwrap_or("2".to_string())
-        .parse()
-        .unwrap();
+    let cli = Cli::parse();
 
-    let persist_path = std::env::var("LYNX_PERSIST_PATH").unwrap_or("/tmp".to_string());
-    let lynx_port = std::env::var("LYNX_PORT").unwrap_or("3000".to_string());
+    match cli.commands {
+        Commands::Server {
+            host,
+            port,
+            events_before_persist,
+            persist_path,
+        } => {
+            server::run(&host, port, events_before_persist, persist_path.into()).await?;
+        }
+        Commands::Write { host, port, file } => {
+            let json = std::fs::read(&file).unwrap();
+            let client = reqwest::Client::new();
 
-    let files = Arc::new(Mutex::new(HashMap::new()));
-    let state = ServerState::new(files, events_before_persist, persist_path.into());
+            let resp = client
+                .post(format!("http://{host}:{port}/{V1_INGEST_PATH}"))
+                .header(CONTENT_TYPE, "application/json")
+                .body(json)
+                .send()
+                .await?;
 
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/api/v1/ingest", post(ingest))
-        .route("/api/v1/query", post(query))
-        .with_state(state);
-
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{lynx_port}")).await?;
-    println!("Running {}", listener.local_addr().unwrap());
-
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-
-async fn health() -> &'static str {
-    "OK"
-}
-
-async fn ingest(
-    State(mut state): State<ServerState>,
-    Json(event): Json<Event>,
-) -> impl IntoResponse {
-    state.ingest.handle_event(event).await;
-    StatusCode::CREATED
-}
-
-async fn query(
-    headers: HeaderMap,
-    State(state): State<ServerState>,
-    Json(payload): Json<InboundQuery>,
-) -> (StatusCode, impl IntoResponse) {
-    let namespace_path = &format!(
-        "{}/lynx/{}",
-        state.persist_path.to_string_lossy(),
-        &payload.namespace
-    );
-    if let Some(record_batches) =
-        handle_sql(state.files, &payload.namespace, payload.sql, namespace_path).await
-    {
-        let format = match headers.get(LYNX_FORMAT_HEADER) {
-            Some(v) => v.to_str().unwrap().into(),
-            None => QueryFormat::Json,
-        };
-
-        match format {
-            QueryFormat::Pretty => {
-                let output = pretty_format_batches(&record_batches).unwrap();
-                (StatusCode::OK, output.to_string())
-            }
-            QueryFormat::Json => {
-                let buf = Vec::new();
-                let mut w = arrow_json::ArrayWriter::new(buf);
-                for record in record_batches {
-                    w.write(&record).expect("Can write to buffer");
+            match resp.status() {
+                StatusCode::CREATED => {}
+                code @ _ => {
+                    return Err(format!(
+                        "received unexpected response {code}, body: {}",
+                        resp.text().await.unwrap()
+                    )
+                    .into())
                 }
-                w.finish().expect("Can finalise buffer");
-                let json = String::from_utf8(w.into_inner()).expect("Valid JSON written");
-                (StatusCode::OK, json)
             }
         }
-    } else {
-        (
-            StatusCode::NOT_FOUND,
-            format!("No persisted files within {}", payload.namespace),
-        )
-    }
+        Commands::Query {
+            host,
+            port,
+            file,
+            format,
+        } => {
+            let json = std::fs::read(&file)?;
+            let client = reqwest::Client::new();
+
+            let resp = client
+                .post(format!("http://{host}:{port}/{V1_QUERY_PATH}"))
+                .header(CONTENT_TYPE, "application/json")
+                .header(LYNX_FORMAT_HEADER, format.as_str())
+                .body(json)
+                .send()
+                .await?;
+
+            println!("{}", resp.text().await?);
+        }
+    };
+
+    Ok(())
 }
