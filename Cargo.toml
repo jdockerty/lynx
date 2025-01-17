@@ -8,6 +8,7 @@ arrow = "53.3.0"
 arrow-json = "53.3.0"
 axum = { version = "0.7.9", features = ["macros"] }
 chrono = "0.4.39"
+clap = { version = "4.5.26", features = ["derive", "env"] }
 datafusion = "43.0.0"
 parquet = "53.3.0"
 serde = { version = "1.0.216", features = ["derive"] }

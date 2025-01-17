@@ -1,9 +1,6 @@
 #![expect(dead_code)]
 
-use std::{
-    process::Command,
-    time::Duration,
-};
+use std::{process::Command, time::Duration};
 
 use assert_cmd::cargo::CommandCargoExt;
 use lynx::{
@@ -64,6 +61,7 @@ impl Lynx {
 
         let process = Command::cargo_bin(env!("CARGO_PKG_NAME"))
             .unwrap()
+            .arg("server")
             .env("LYNX_PORT", port.to_string())
             .env("LYNX_PERSIST_PATH", persist_path.path())
             .env("LYNX_PERSIST_EVENTS", max_events.to_string())
