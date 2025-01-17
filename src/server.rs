@@ -70,7 +70,7 @@ pub async fn run(
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("{host}:{port}")).await?;
-    println!("Running {}", listener.local_addr().unwrap());
+    eprintln!("Running {}", listener.local_addr().unwrap());
 
     axum::serve(listener, app).await?;
     Ok(())
