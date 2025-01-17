@@ -1,4 +1,9 @@
-use std::{process::Command, time::Duration};
+#![expect(dead_code)]
+
+use std::{
+    process::Command,
+    time::Duration,
+};
 
 use assert_cmd::cargo::CommandCargoExt;
 use lynx::{
@@ -17,21 +22,51 @@ const INGEST_PATH: &str = "api/v1/ingest";
 
 struct Lynx {
     process: std::process::Child,
-    persist_path: TempDir,
-    port: u16,
     client: reqwest::Client,
+    port: u16,
+    persist_path: TempDir,
+    /// Options that the test instance of lynx was configured with.
+    options: LynxOptions,
+}
+
+#[derive(Default)]
+struct LynxOptions {
+    port: Option<u16>,
+    max_events: Option<i64>,
+}
+
+impl LynxOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_max_events(mut self, max_events: i64) -> Self {
+        self.max_events = Some(max_events);
+        self
+    }
+
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = Some(port);
+        self
+    }
 }
 
 impl Lynx {
-    pub fn new(max_events: Option<i64>) -> Self {
-        let mut rand = rand::thread_rng();
-        let port = rand.gen_range(1024..=65535); // User port range
+    pub fn new(opts: LynxOptions) -> Self {
         let persist_path = TempDir::new().unwrap();
+
+        let port = opts.port.unwrap_or_else(|| {
+            let mut rand = rand::thread_rng();
+            rand.gen_range(1024..=65535) // User port range
+        });
+
+        let max_events = opts.max_events.unwrap_or(2);
+
         let process = Command::cargo_bin(env!("CARGO_PKG_NAME"))
             .unwrap()
             .env("LYNX_PORT", port.to_string())
             .env("LYNX_PERSIST_PATH", persist_path.path())
-            .env("LYNX_PERSIST_EVENTS", max_events.unwrap_or(2).to_string())
+            .env("LYNX_PERSIST_EVENTS", max_events.to_string())
             .spawn()
             .expect("Can run lynx");
 
@@ -40,10 +75,11 @@ impl Lynx {
         std::thread::sleep(Duration::from_secs(2));
 
         Self {
-            process,
             port,
-            client: reqwest::Client::new(),
             persist_path,
+            process,
+            client: reqwest::Client::new(),
+            options: opts,
         }
     }
 
@@ -92,7 +128,7 @@ impl Drop for Lynx {
 
 #[tokio::test]
 async fn query_after_persist() {
-    let lynx = Lynx::new(None);
+    let lynx = Lynx::new(LynxOptions::new());
 
     let event = helpers::arbitrary_event();
     lynx.ingest(&event).await;
@@ -126,7 +162,7 @@ async fn query_after_persist() {
 
 #[tokio::test]
 async fn ingest_and_persist_check() {
-    let lynx = Lynx::new(None);
+    let lynx = Lynx::new(LynxOptions::new());
 
     let event = helpers::arbitrary_event();
     lynx.ingest(&event).await;
@@ -163,18 +199,24 @@ async fn ingest_and_persist_check() {
 
 #[tokio::test]
 async fn persist_with_increased_counter() {
-    let lynx = Lynx::new(Some(5));
+    let opts = LynxOptions::new().with_max_events(5);
+    let lynx = Lynx::new(opts);
 
     let event = helpers::arbitrary_event();
     lynx.ingest(&event).await;
     lynx.ingest(&event).await;
 
     let namespace_path = lynx.persist_path.path().join("lynx").join(&event.namespace);
-    assert!(!std::fs::exists(&namespace_path).unwrap());
+    assert!(
+        !std::fs::exists(&namespace_path).unwrap(),
+        "Persist should not have happened yet"
+    );
 
     lynx.ingest(&event).await;
     lynx.ingest(&event).await;
     lynx.ingest(&event).await;
-    lynx.ingest(&event).await;
-    assert!(std::fs::exists(&namespace_path).unwrap());
+    assert!(
+        std::fs::exists(&namespace_path).unwrap(),
+        "Expected persist after 5 events"
+    );
 }
