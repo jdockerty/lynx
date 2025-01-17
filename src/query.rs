@@ -4,7 +4,54 @@ use std::sync::Arc;
 use arrow::array::RecordBatch;
 use datafusion::datasource::{file_format::parquet::ParquetFormat, listing::ListingOptions};
 use datafusion::prelude::SessionContext;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InboundQuery {
+    pub namespace: String,
+    pub sql: String,
+}
+
+/// Response from a query after persist.
+///
+/// TODO: this needs some investigation, but does work for now.
+///
+/// The timestamp should not be a string, it should be the same i64 value that
+/// was given in the original event. It is also missing 'metadata', which should
+/// be arbitrary k-v pairs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryResponse {
+    pub timestamp: String,
+    pub name: String,
+    pub value: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum QueryFormat {
+    #[default]
+    Json,
+    Pretty,
+}
+
+impl QueryFormat {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Json => "json",
+            Self::Pretty => "pretty",
+        }
+    }
+}
+
+impl From<&str> for QueryFormat {
+    fn from(value: &str) -> Self {
+        match value {
+            "json" => QueryFormat::Json,
+            "pretty" => QueryFormat::Pretty,
+            _ => QueryFormat::Json, // Default to JSON
+        }
+    }
+}
 
 pub async fn handle_sql(
     files: Arc<Mutex<HashMap<String, SessionContext>>>,
