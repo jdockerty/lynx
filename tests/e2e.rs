@@ -6,6 +6,7 @@ use assert_cmd::cargo::CommandCargoExt;
 use lynx::{
     event::Event,
     query::{InboundQuery, QueryFormat, QueryResponse},
+    server::{V1_INGEST_PATH, V1_QUERY_PATH},
     LYNX_FORMAT_HEADER,
 };
 use rand::Rng;
@@ -13,9 +14,6 @@ use reqwest::{header::CONTENT_TYPE, StatusCode};
 use tempfile::TempDir;
 
 mod helpers;
-
-const QUERY_PATH: &str = "api/v1/query";
-const INGEST_PATH: &str = "api/v1/ingest";
 
 struct Lynx {
     process: std::process::Child,
@@ -86,7 +84,7 @@ impl Lynx {
 
         let response = self
             .client
-            .post(format!("http://127.0.0.1:{}/{INGEST_PATH}", self.port))
+            .post(format!("http://127.0.0.1:{}/{V1_INGEST_PATH}", self.port))
             .header(CONTENT_TYPE, "application/json")
             .body(json)
             .send()
@@ -106,7 +104,7 @@ impl Lynx {
 
         let response = self
             .client
-            .post(format!("http://127.0.0.1:{}/{QUERY_PATH}", self.port))
+            .post(format!("http://127.0.0.1:{}/{V1_QUERY_PATH}", self.port))
             .header(CONTENT_TYPE, "application/json")
             .header(LYNX_FORMAT_HEADER, format.as_str())
             .body(json)

@@ -17,6 +17,9 @@ use tokio::sync::Mutex;
 
 pub const LYNX_FORMAT_HEADER: &str = "X-Lynx-Format";
 
+pub const V1_QUERY_PATH: &str = "api/v1/query";
+pub const V1_INGEST_PATH: &str = "api/v1/ingest";
+
 /// The level of persistence to run the server in, this dictates how ingested
 /// events are persisted.
 ///
@@ -62,8 +65,8 @@ pub async fn run(
 
     let app = Router::new()
         .route("/health", get(health))
-        .route("/api/v1/ingest", post(ingest))
-        .route("/api/v1/query", post(query))
+        .route(&format!("/{V1_INGEST_PATH}"), post(ingest))
+        .route(&format!("/{V1_QUERY_PATH}"), post(query))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("{host}:{port}")).await?;
