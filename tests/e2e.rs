@@ -2,16 +2,17 @@
 
 use std::{process::Command, time::Duration};
 
-use assert_cmd::cargo::CommandCargoExt;
+use assert_cmd::{assert::OutputAssertExt, cargo::CommandCargoExt, output::OutputOkExt};
 use lynx::{
     event::Event,
     query::{InboundQuery, QueryFormat, QueryResponse},
     server::{V1_INGEST_PATH, V1_QUERY_PATH},
     LYNX_FORMAT_HEADER,
 };
+use predicates::{boolean::PredicateBooleanExt, str::contains};
 use rand::Rng;
 use reqwest::{header::CONTENT_TYPE, StatusCode};
-use tempfile::TempDir;
+use tempfile::{NamedTempFile, TempDir};
 
 mod helpers;
 
@@ -147,7 +148,7 @@ async fn query_after_persist() {
                     }
                     break;
                 }
-                Err(e) => eprintln!("{e}"),
+                Err(e) => eprintln!("Unable to read query response, retrying: {e}"),
             };
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -184,7 +185,7 @@ async fn ingest_and_persist_check() {
                     }
                     break;
                 }
-                Err(e) => eprintln!("{e}"),
+                Err(e) => eprintln!("Unable to read {}, retrying: {e}", namespace_path.display()),
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -215,4 +216,49 @@ async fn persist_with_increased_counter() {
         std::fs::exists(&namespace_path).unwrap(),
         "Expected persist after 5 events"
     );
+}
+
+#[tokio::test]
+async fn cli() {
+    let lynx = Lynx::new(LynxOptions::new().with_max_events(1));
+
+    let write_input = NamedTempFile::new().unwrap();
+    let event = helpers::arbitrary_event();
+    serde_json::to_writer(&write_input, &event).unwrap();
+
+    let query_input = NamedTempFile::new().unwrap();
+    let query = InboundQuery {
+        namespace: event.namespace.clone(),
+        sql: format!("SELECT * from {}", event.namespace),
+    };
+    serde_json::to_writer(&query_input, &query).unwrap();
+
+    let _write_cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))
+        .unwrap()
+        .arg("write")
+        .arg("--port")
+        .arg(lynx.port.to_string())
+        .arg("--file")
+        .arg(write_input.path())
+        .unwrap()
+        .assert()
+        .success();
+
+    let query_output = Command::cargo_bin(env!("CARGO_PKG_NAME"))
+        .unwrap()
+        .arg("query")
+        .arg("--port")
+        .arg(lynx.port.to_string())
+        .arg("--file")
+        .arg(query_input.path())
+        .arg("--format")
+        .arg("pretty")
+        .unwrap()
+        .assert()
+        .success();
+
+    println!("{}", query_output.to_string());
+
+    query_output
+        .stdout(contains(format!("{}", event.name)).and(contains(format!("{}", event.value))));
 }
