@@ -15,6 +15,7 @@ struct Cli {
 
 #[derive(Debug, Clone, Subcommand)]
 enum Commands {
+    /// Run the lynx server
     Server {
         #[arg(long, env = "LYNX_HOST", default_value = "127.0.0.1")]
         host: String,
@@ -30,6 +31,7 @@ enum Commands {
         #[arg(long, env = "LYNX_PERSIST_PATH", default_value = "/tmp")]
         persist_path: PathBuf,
     },
+    /// Write data to lynx
     Write {
         #[arg(long, env = "LYNX_HOST", default_value = "127.0.0.1")]
         host: String,
@@ -41,6 +43,7 @@ enum Commands {
         #[arg(long)]
         file: PathBuf,
     },
+    /// Query data from lynx
     Query {
         #[arg(long, env = "LYNX_HOST", default_value = "127.0.0.1")]
         host: String,
