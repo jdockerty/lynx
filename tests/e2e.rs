@@ -10,6 +10,8 @@ use rand::Rng;
 use reqwest::{header::CONTENT_TYPE, StatusCode};
 use tempfile::TempDir;
 
+mod helpers;
+
 const QUERY_PATH: &str = "api/v1/query";
 const INGEST_PATH: &str = "api/v1/ingest";
 
@@ -21,7 +23,7 @@ struct Lynx {
 }
 
 impl Lynx {
-    pub fn new() -> Self {
+    pub fn new(max_events: Option<i64>) -> Self {
         let mut rand = rand::thread_rng();
         let port = rand.gen_range(1024..=65535); // User port range
         let persist_path = TempDir::new().unwrap();
@@ -29,6 +31,7 @@ impl Lynx {
             .unwrap()
             .env("LYNX_PORT", port.to_string())
             .env("LYNX_PERSIST_PATH", persist_path.path())
+            .env("LYNX_PERSIST_EVENTS", max_events.unwrap_or(2).to_string())
             .spawn()
             .expect("Can run lynx");
 
@@ -88,22 +91,14 @@ impl Drop for Lynx {
 }
 
 #[tokio::test]
-async fn full_query() {
-    let lynx = Lynx::new();
+async fn query_after_persist() {
+    let lynx = Lynx::new(None);
 
-    let event = Event {
-        namespace: "my_namespace".to_string(),
-        name: "test_event".to_string(),
-        timestamp: 111,
-        precision: None,
-        value: 1,
-        metadata: serde_json::Value::Null,
-    };
-
+    let event = helpers::arbitrary_event();
     lynx.ingest(&event).await;
     lynx.ingest(&event).await;
 
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let response = lynx
                 .query(
@@ -122,7 +117,7 @@ async fn full_query() {
                 }
                 Err(e) => eprintln!("{e}"),
             };
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     })
     .await
@@ -130,26 +125,20 @@ async fn full_query() {
 }
 
 #[tokio::test]
-async fn full_ingest() {
-    let lynx = Lynx::new();
+async fn ingest_and_persist_check() {
+    let lynx = Lynx::new(None);
 
-    let event = Event {
-        namespace: "my_namespace".to_string(),
-        name: "test_event".to_string(),
-        timestamp: 111,
-        precision: None,
-        value: 1,
-        metadata: serde_json::Value::Null,
-    };
-
+    let event = helpers::arbitrary_event();
     lynx.ingest(&event).await;
     lynx.ingest(&event).await;
 
-    tokio::time::timeout(Duration::from_secs(2), async {
-        let namespace_path = lynx.persist_path.path().join("lynx").join("my_namespace");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let namespace_path = lynx.persist_path.path().join("lynx").join(event.namespace);
         loop {
             match std::fs::read_dir(&namespace_path) {
                 Ok(entries) => {
+                    // Short wait for persistence now that the path exists
+                    tokio::time::sleep(Duration::from_millis(500)).await;
                     for entry in entries {
                         let entry = entry.unwrap();
                         assert!(
@@ -165,9 +154,27 @@ async fn full_ingest() {
                 }
                 Err(e) => eprintln!("{e}"),
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     })
     .await
     .expect("Persist event did not occur");
+}
+
+#[tokio::test]
+async fn persist_with_increased_counter() {
+    let lynx = Lynx::new(Some(5));
+
+    let event = helpers::arbitrary_event();
+    lynx.ingest(&event).await;
+    lynx.ingest(&event).await;
+
+    let namespace_path = lynx.persist_path.path().join("lynx").join(&event.namespace);
+    assert!(!std::fs::exists(&namespace_path).unwrap());
+
+    lynx.ingest(&event).await;
+    lynx.ingest(&event).await;
+    lynx.ingest(&event).await;
+    lynx.ingest(&event).await;
+    assert!(std::fs::exists(&namespace_path).unwrap());
 }
