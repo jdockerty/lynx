@@ -212,6 +212,7 @@ async fn persist_with_increased_counter() {
     lynx.ingest(&event).await;
     lynx.ingest(&event).await;
     lynx.ingest(&event).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
         std::fs::exists(&namespace_path).unwrap(),
         "Expected persist after 5 events"
