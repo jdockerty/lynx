@@ -13,6 +13,7 @@ use axum::{
     Json, Router,
 };
 use datafusion::prelude::SessionContext;
+use object_store::ObjectStore;
 use tokio::sync::Mutex;
 
 pub const LYNX_FORMAT_HEADER: &str = "X-Lynx-Format";
@@ -23,14 +24,22 @@ pub const V1_INGEST_PATH: &str = "api/v1/ingest";
 /// The level of persistence to run the server in, this dictates how ingested
 /// events are persisted.
 ///
-/// - Local means that events are ingested and written to local parquet files.
-/// - Remote means that events are ingested and parquet files are written into
-///   an object store implementation.
-#[derive(Debug)]
-#[allow(dead_code)]
-enum Persistence {
+/// - Local: parquet files will be persisted to the local filesystem.
+/// - S3: parquet files will be persisted to an S3-compatible object store.
+#[derive(Debug, Clone, Default, clap::ValueEnum)]
+pub enum Persistence {
+    #[default]
     Local,
-    Remote, // TODO
+    S3,
+}
+
+impl Persistence {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::S3 => "s3",
+            Self::Local => "local",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -41,27 +50,29 @@ struct ServerState {
 }
 
 impl ServerState {
-    pub fn new(
+    pub fn new<O: ObjectStore>(
         files: Arc<Mutex<HashMap<String, SessionContext>>>,
         max_events: i64,
         persist_path: PathBuf,
+        object_store: Arc<O>,
     ) -> Self {
         Self {
             files: Arc::clone(&files),
             persist_path: persist_path.clone(),
-            ingest: PersistHandle::new(files, persist_path, max_events),
+            ingest: PersistHandle::new(files, persist_path, max_events, object_store),
         }
     }
 }
 
-pub async fn run(
+pub async fn run<O: ObjectStore>(
     host: &str,
     port: u16,
     events_before_persist: i64,
     persist_path: PathBuf,
+    object_store: Arc<O>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let files = Arc::new(Mutex::new(HashMap::new()));
-    let state = ServerState::new(files, events_before_persist, persist_path);
+    let state = ServerState::new(files, events_before_persist, persist_path, object_store);
 
     let app = Router::new()
         .route("/health", get(health))

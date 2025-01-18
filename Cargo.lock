@@ -2058,6 +2058,7 @@ dependencies = [
  "chrono",
  "clap",
  "datafusion",
+ "object_store",
  "parquet",
  "predicates",
  "rand",
