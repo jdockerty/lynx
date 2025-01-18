@@ -20,11 +20,11 @@ pub struct PersistHandle {
 }
 
 impl PersistHandle {
-    pub fn new(
+    pub fn new<O: ObjectStore>(
         files: Arc<Mutex<HashMap<String, SessionContext>>>,
         persist_path: PathBuf,
         max_events: i64,
-        object_store: Arc<dyn ObjectStore>,
+        object_store: Arc<O>,
     ) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(100);
         let actor = PersistActor::new(max_events, rx, files, persist_path, object_store);
@@ -38,22 +38,22 @@ impl PersistHandle {
     }
 }
 
-pub struct PersistActor {
+pub struct PersistActor<O: ObjectStore> {
     max_events: i64,
     event_receiver: Receiver<Event>,
     events: HashMap<String, Vec<Event>>,
     files: Arc<Mutex<HashMap<String, SessionContext>>>,
     persist_path: PathBuf,
-    object_store: Arc<dyn ObjectStore>,
+    object_store: Arc<O>,
 }
 
-impl PersistActor {
+impl<O: ObjectStore> PersistActor<O> {
     pub fn new(
         max_events: i64,
         event_receiver: Receiver<Event>,
         files: Arc<Mutex<HashMap<String, SessionContext>>>,
         persist_path: PathBuf,
-        object_store: Arc<dyn ObjectStore>,
+        object_store: Arc<O>,
     ) -> Self {
         Self {
             files,
@@ -66,7 +66,7 @@ impl PersistActor {
     }
 }
 
-pub async fn run_persist_actor(mut actor: PersistActor) {
+pub async fn run_persist_actor<O: ObjectStore>(mut actor: PersistActor<O>) {
     while let Some(event) = actor.event_receiver.recv().await {
         let in_mem_event = actor
             .events

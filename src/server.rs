@@ -50,11 +50,11 @@ struct ServerState {
 }
 
 impl ServerState {
-    pub fn new(
+    pub fn new<O: ObjectStore>(
         files: Arc<Mutex<HashMap<String, SessionContext>>>,
         max_events: i64,
         persist_path: PathBuf,
-        object_store: Arc<dyn ObjectStore>,
+        object_store: Arc<O>,
     ) -> Self {
         Self {
             files: Arc::clone(&files),
@@ -64,12 +64,12 @@ impl ServerState {
     }
 }
 
-pub async fn run(
+pub async fn run<O: ObjectStore>(
     host: &str,
     port: u16,
     events_before_persist: i64,
     persist_path: PathBuf,
-    object_store: Arc<dyn ObjectStore>,
+    object_store: Arc<O>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let files = Arc::new(Mutex::new(HashMap::new()));
     let state = ServerState::new(files, events_before_persist, persist_path, object_store);
