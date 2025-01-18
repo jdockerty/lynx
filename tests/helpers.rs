@@ -73,10 +73,6 @@ impl Lynx {
             .spawn()
             .expect("Can run lynx");
 
-        // Arbitrary sleep to enforce server startup period
-        // TODO: this could be flakey
-        std::thread::sleep(Duration::from_secs(2));
-
         Self {
             port,
             persist_path,
@@ -84,6 +80,25 @@ impl Lynx {
             client: reqwest::Client::new(),
             options: opts,
         }
+    }
+
+    pub async fn ensure_healthy(&self) {
+        tokio::time::timeout(Duration::from_secs(3), async move {
+            let client = reqwest::Client::new();
+            loop {
+                if client
+                    .get(format!("http://127.0.0.1:{}/health", self.port))
+                    .send()
+                    .await
+                    .is_ok()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("Server is healthy");
     }
 
     pub async fn ingest(&self, event: &Event) {

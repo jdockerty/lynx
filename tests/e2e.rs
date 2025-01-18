@@ -12,6 +12,7 @@ use helpers::{Lynx, LynxOptions};
 #[tokio::test]
 async fn query_after_persist() {
     let lynx = Lynx::new(LynxOptions::new());
+    lynx.ensure_healthy().await;
 
     let event = helpers::arbitrary_event();
     lynx.ingest(&event).await;
@@ -46,6 +47,7 @@ async fn query_after_persist() {
 #[tokio::test]
 async fn ingest_and_persist_check() {
     let lynx = Lynx::new(LynxOptions::new());
+    lynx.ensure_healthy().await;
 
     let event = helpers::arbitrary_event();
     lynx.ingest(&event).await;
@@ -84,6 +86,7 @@ async fn ingest_and_persist_check() {
 async fn persist_with_increased_counter() {
     let opts = LynxOptions::new().with_max_events(5);
     let lynx = Lynx::new(opts);
+    lynx.ensure_healthy().await;
 
     let event = helpers::arbitrary_event();
     lynx.ingest(&event).await;
@@ -108,6 +111,7 @@ async fn persist_with_increased_counter() {
 #[tokio::test]
 async fn cli() {
     let lynx = Lynx::new(LynxOptions::new().with_max_events(1));
+    lynx.ensure_healthy().await;
 
     let write_input = NamedTempFile::new().unwrap();
     let event = helpers::arbitrary_event();
