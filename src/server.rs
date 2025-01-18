@@ -24,9 +24,8 @@ pub const V1_INGEST_PATH: &str = "api/v1/ingest";
 /// The level of persistence to run the server in, this dictates how ingested
 /// events are persisted.
 ///
-/// - Local means that events are ingested and written to local parquet files.
-/// - S3 means that events are ingested and parquet files are written into
-///   an S3-compatible object store.
+/// - Local: parquet files will be persisted to the local filesystem.
+/// - S3: parquet files will be persisted to an S3-compatible object store.
 #[derive(Debug, Clone, Default, clap::ValueEnum)]
 pub enum Persistence {
     #[default]

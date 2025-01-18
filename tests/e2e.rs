@@ -146,6 +146,5 @@ async fn cli() {
 
     println!("{}", query_output);
 
-    query_output
-        .stdout(contains(event.name.to_string()).and(contains(event.value.to_string())));
+    query_output.stdout(contains(event.name.to_string()).and(contains(event.value.to_string())));
 }
