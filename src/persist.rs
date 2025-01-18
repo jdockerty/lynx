@@ -5,6 +5,7 @@ use arrow::array::{
     ArrayRef, RecordBatch, StringBuilder, TimestampMicrosecondBuilder, UInt64Builder,
 };
 use datafusion::execution::context::SessionContext;
+use object_store::{ObjectStore, PutPayload};
 use parquet::arrow::ArrowWriter;
 use tokio::sync::{
     mpsc::{Receiver, Sender},
@@ -23,9 +24,10 @@ impl PersistHandle {
         files: Arc<Mutex<HashMap<String, SessionContext>>>,
         persist_path: PathBuf,
         max_events: i64,
+        object_store: Arc<dyn ObjectStore>,
     ) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(100);
-        let actor = PersistActor::new(max_events, rx, files, persist_path);
+        let actor = PersistActor::new(max_events, rx, files, persist_path, object_store);
         tokio::spawn(run_persist_actor(actor));
 
         Self { events_queue: tx }
@@ -42,6 +44,7 @@ pub struct PersistActor {
     events: HashMap<String, Vec<Event>>,
     files: Arc<Mutex<HashMap<String, SessionContext>>>,
     persist_path: PathBuf,
+    object_store: Arc<dyn ObjectStore>,
 }
 
 impl PersistActor {
@@ -50,6 +53,7 @@ impl PersistActor {
         event_receiver: Receiver<Event>,
         files: Arc<Mutex<HashMap<String, SessionContext>>>,
         persist_path: PathBuf,
+        object_store: Arc<dyn ObjectStore>,
     ) -> Self {
         Self {
             files,
@@ -57,6 +61,7 @@ impl PersistActor {
             max_events,
             event_receiver,
             persist_path,
+            object_store,
         }
     }
 }
@@ -72,16 +77,6 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
         if in_mem_event.len() == actor.max_events as usize {
             eprintln!("Persisting events for {}", event.namespace);
             for (namespace, events) in &actor.events {
-                let path = format!("{}/lynx/{namespace}", actor.persist_path.to_string_lossy());
-                eprintln!("Persisting to {path}");
-
-                if !std::fs::exists(&path).unwrap() {
-                    std::fs::create_dir_all(&path).unwrap();
-                }
-
-                let now = chrono::Utc::now().timestamp_micros();
-                let filename = format!("lynx-{now}.parquet");
-                let file = std::fs::File::create_new(format!("{path}/{filename}")).unwrap();
                 let mut names = StringBuilder::new();
                 let mut values = UInt64Builder::new();
                 // TODO: precision hints
@@ -104,9 +99,19 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
                 ])
                 .unwrap();
 
-                let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
+                let mut v = Vec::new();
+                let mut writer = ArrowWriter::try_new(&mut v, batch.schema(), None).unwrap();
                 writer.write(&batch).unwrap();
                 writer.close().unwrap();
+
+                let now = chrono::Utc::now().timestamp_micros();
+                let filename = format!("lynx-{now}.parquet");
+                let path = object_store::path::Path::from(format!("lynx/{namespace}/{filename}"));
+                eprintln!("Persisting to {}/{path}", actor.persist_path.display());
+
+                let payload = PutPayload::from_bytes(v.into());
+                actor.object_store.put(&path, payload).await.unwrap();
+
                 actor
                     .files
                     .lock()
@@ -136,7 +141,14 @@ mod test {
         let (tx, rx) = tokio::sync::mpsc::channel(10);
         let temp_dir = TempDir::new().unwrap();
         let files = Arc::new(Mutex::new(HashMap::new()));
-        let actor = PersistActor::new(1, rx, Arc::clone(&files), temp_dir.path().to_path_buf());
+        let object_store = Arc::new(object_store::memory::InMemory::new());
+        let actor = PersistActor::new(
+            1,
+            rx,
+            Arc::clone(&files),
+            temp_dir.path().to_path_buf(),
+            object_store,
+        );
 
         let namespace = "my_org_1".to_string();
 
