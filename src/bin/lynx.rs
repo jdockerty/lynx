@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use lynx::{
     query::QueryFormat,
-    server::{self, LYNX_FORMAT_HEADER, V1_INGEST_PATH, V1_QUERY_PATH},
+    server::{self, Persistence, LYNX_FORMAT_HEADER, V1_INGEST_PATH, V1_QUERY_PATH},
 };
 use reqwest::{header::CONTENT_TYPE, StatusCode};
 
@@ -30,6 +30,12 @@ enum Commands {
         /// Path where lynx will persist parquet files.
         #[arg(long, env = "LYNX_PERSIST_PATH", default_value = "/tmp")]
         persist_path: PathBuf,
+
+        /// Dictate where parquet files will be persisted.
+        ///
+        /// All modes except 'local' require extra configuration.
+        #[arg(long, env = "LYNX_PERSIST_MODE", default_value = "local")]
+        persist_mode: Persistence,
     },
     /// Write data to lynx
     Write {
@@ -70,8 +76,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             port,
             events_before_persist,
             persist_path,
+            persist_mode,
         } => {
-            server::run(&host, port, events_before_persist, persist_path.into()).await?;
+            let object_store = match persist_mode {
+                Persistence::Local => {
+                    object_store::local::LocalFileSystem::new_with_prefix(&persist_path)?
+                }
+                Persistence::S3 => todo!(),
+            };
+            server::run(
+                &host,
+                port,
+                events_before_persist,
+                persist_path,
+                Arc::new(object_store),
+            )
+            .await?;
         }
         Commands::Write { host, port, file } => {
             let json = std::fs::read(&file).unwrap();
@@ -86,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             match resp.status() {
                 StatusCode::CREATED => {}
-                code @ _ => {
+                code => {
                     return Err(format!(
                         "received unexpected response {code}, body: {}",
                         resp.text().await.unwrap()
