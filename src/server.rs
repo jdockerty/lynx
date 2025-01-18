@@ -34,6 +34,15 @@ pub enum Persistence {
     S3,
 }
 
+impl Persistence {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::S3 => "s3",
+            Self::Local => "local",
+        }
+    }
+}
+
 #[derive(Clone)]
 struct ServerState {
     ingest: PersistHandle,

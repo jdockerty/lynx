@@ -6,7 +6,7 @@ use assert_cmd::{assert::OutputAssertExt, cargo::CommandCargoExt, output::Output
 use lynx::{
     event::Event,
     query::{InboundQuery, QueryFormat, QueryResponse},
-    server::{V1_INGEST_PATH, V1_QUERY_PATH},
+    server::{Persistence, V1_INGEST_PATH, V1_QUERY_PATH},
     LYNX_FORMAT_HEADER,
 };
 use predicates::{boolean::PredicateBooleanExt, str::contains};
@@ -29,6 +29,7 @@ struct Lynx {
 struct LynxOptions {
     port: Option<u16>,
     max_events: Option<i64>,
+    persist_mode: Option<Persistence>,
 }
 
 impl LynxOptions {
@@ -45,6 +46,11 @@ impl LynxOptions {
         self.port = Some(port);
         self
     }
+
+    pub fn with_persist_mode(mut self, persist_mode: Persistence) -> Self {
+        self.persist_mode = Some(persist_mode);
+        self
+    }
 }
 
 impl Lynx {
@@ -57,6 +63,7 @@ impl Lynx {
         });
 
         let max_events = opts.max_events.unwrap_or(2);
+        let persist_mode = opts.persist_mode.clone().unwrap_or_default();
 
         let process = Command::cargo_bin(env!("CARGO_PKG_NAME"))
             .unwrap()
@@ -64,6 +71,7 @@ impl Lynx {
             .env("LYNX_PORT", port.to_string())
             .env("LYNX_PERSIST_PATH", persist_path.path())
             .env("LYNX_PERSIST_EVENTS", max_events.to_string())
+            .env("LYNX_PERSIST_MODE", persist_mode.as_str())
             .spawn()
             .expect("Can run lynx");
 
