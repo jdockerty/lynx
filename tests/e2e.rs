@@ -1,135 +1,13 @@
-#![expect(dead_code)]
-
 use std::{process::Command, time::Duration};
 
 use assert_cmd::{assert::OutputAssertExt, cargo::CommandCargoExt, output::OutputOkExt};
-use lynx::{
-    event::Event,
-    query::{InboundQuery, QueryFormat, QueryResponse},
-    server::{Persistence, V1_INGEST_PATH, V1_QUERY_PATH},
-    LYNX_FORMAT_HEADER,
-};
+use lynx::query::{InboundQuery, QueryFormat, QueryResponse};
 use predicates::{boolean::PredicateBooleanExt, str::contains};
-use rand::Rng;
-use reqwest::{header::CONTENT_TYPE, StatusCode};
-use tempfile::{NamedTempFile, TempDir};
+use tempfile::NamedTempFile;
 
 mod helpers;
 
-struct Lynx {
-    process: std::process::Child,
-    client: reqwest::Client,
-    port: u16,
-    persist_path: TempDir,
-    /// Options that the test instance of lynx was configured with.
-    options: LynxOptions,
-}
-
-#[derive(Default)]
-struct LynxOptions {
-    port: Option<u16>,
-    max_events: Option<i64>,
-    persist_mode: Option<Persistence>,
-}
-
-impl LynxOptions {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_max_events(mut self, max_events: i64) -> Self {
-        self.max_events = Some(max_events);
-        self
-    }
-
-    pub fn with_port(mut self, port: u16) -> Self {
-        self.port = Some(port);
-        self
-    }
-
-    pub fn with_persist_mode(mut self, persist_mode: Persistence) -> Self {
-        self.persist_mode = Some(persist_mode);
-        self
-    }
-}
-
-impl Lynx {
-    pub fn new(opts: LynxOptions) -> Self {
-        let persist_path = TempDir::new().unwrap();
-
-        let port = opts.port.unwrap_or_else(|| {
-            let mut rand = rand::thread_rng();
-            rand.gen_range(1024..=65535) // User port range
-        });
-
-        let max_events = opts.max_events.unwrap_or(2);
-        let persist_mode = opts.persist_mode.clone().unwrap_or_default();
-
-        let process = Command::cargo_bin(env!("CARGO_PKG_NAME"))
-            .unwrap()
-            .arg("server")
-            .env("LYNX_PORT", port.to_string())
-            .env("LYNX_PERSIST_PATH", persist_path.path())
-            .env("LYNX_PERSIST_EVENTS", max_events.to_string())
-            .env("LYNX_PERSIST_MODE", persist_mode.as_str())
-            .spawn()
-            .expect("Can run lynx");
-
-        // Arbitrary sleep to enforce server startup period
-        // TODO: this could be flakey
-        std::thread::sleep(Duration::from_secs(2));
-
-        Self {
-            port,
-            persist_path,
-            process,
-            client: reqwest::Client::new(),
-            options: opts,
-        }
-    }
-
-    pub async fn ingest(&self, event: &Event) {
-        let json = serde_json::to_vec(event).unwrap();
-
-        let response = self
-            .client
-            .post(format!("http://127.0.0.1:{}/{V1_INGEST_PATH}", self.port))
-            .header(CONTENT_TYPE, "application/json")
-            .body(json)
-            .send()
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CREATED);
-    }
-
-    pub async fn query(&self, namespace: &str, sql: &str, format: QueryFormat) -> String {
-        let query = InboundQuery {
-            namespace: namespace.to_string(),
-            sql: sql.to_string(),
-        };
-
-        let json = serde_json::to_vec(&query).unwrap();
-
-        let response = self
-            .client
-            .post(format!("http://127.0.0.1:{}/{V1_QUERY_PATH}", self.port))
-            .header(CONTENT_TYPE, "application/json")
-            .header(LYNX_FORMAT_HEADER, format.as_str())
-            .body(json)
-            .send()
-            .await
-            .unwrap();
-
-        response.text().await.unwrap()
-    }
-}
-
-impl Drop for Lynx {
-    fn drop(&mut self) {
-        self.process.kill().expect("Can kill process on Drop");
-    }
-}
+use helpers::{Lynx, LynxOptions};
 
 #[tokio::test]
 async fn query_after_persist() {
@@ -266,8 +144,8 @@ async fn cli() {
         .assert()
         .success();
 
-    println!("{}", query_output.to_string());
+    println!("{}", query_output);
 
     query_output
-        .stdout(contains(format!("{}", event.name)).and(contains(format!("{}", event.value))));
+        .stdout(contains(event.name.to_string()).and(contains(event.value.to_string())));
 }
