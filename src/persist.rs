@@ -181,4 +181,75 @@ mod test {
             panic!("Persistence did not occur");
         }
     }
+
+    #[tokio::test]
+    async fn no_persist_for_different_namespace() {
+        let (tx, rx) = tokio::sync::mpsc::channel(10);
+        let temp_dir = Arc::new(TempDir::new().unwrap());
+        let files = Arc::new(Mutex::new(HashMap::new()));
+        let object_store = Arc::new(object_store::memory::InMemory::new());
+        let actor = PersistActor::new(
+            2,
+            rx,
+            Arc::clone(&files),
+            temp_dir.path().to_path_buf(),
+            object_store,
+        );
+
+        let namespace = "my_org_1".to_string();
+
+        tokio::spawn(async move {
+            run_persist_actor(actor).await;
+        });
+
+        let event = Event {
+            namespace: "my_org_2".to_string(),
+            name: "heater".to_string(),
+            timestamp: 1000,
+            value: 10,
+            precision: None,
+            metadata: serde_json::Value::Null,
+        };
+        tx.send(event.clone()).await.unwrap();
+        assert_eq!(
+            tokio::fs::try_exists(temp_dir.path().join("lynx").join("my_org_2"))
+                .await
+                .unwrap(),
+            false,
+            "No persistence expected for 'my_org_2', only 1 event was sent when 2 are required"
+        );
+
+        let event = Event {
+            namespace: namespace.clone(),
+            ..event
+        };
+
+        tx.send(event.clone()).await.unwrap();
+        tx.send(event.clone()).await.unwrap();
+
+        let persisted_dir = Arc::clone(&temp_dir);
+        if (tokio::time::timeout(Duration::from_secs(2), async move {
+            let persist_path = persisted_dir.path().join("lynx").join(&namespace);
+            loop {
+                match tokio::fs::try_exists(&persist_path).await {
+                    Ok(_) => break,
+                    Err(e) => eprintln!("{e}"),
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await)
+            .is_err()
+        {
+            panic!("Persistence did not occur");
+        }
+
+        assert_eq!(
+            tokio::fs::try_exists(temp_dir.path().join("lynx").join("my_org_2"))
+                .await
+                .unwrap(),
+            false,
+            "Persistence for 'my_org_2' still should not occurr"
+        );
+    }
 }
