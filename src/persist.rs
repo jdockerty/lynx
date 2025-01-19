@@ -211,11 +211,10 @@ mod test {
             metadata: serde_json::Value::Null,
         };
         tx.send(event.clone()).await.unwrap();
-        assert_eq!(
-            tokio::fs::try_exists(temp_dir.path().join("lynx").join("my_org_2"))
+        assert!(
+            !tokio::fs::try_exists(temp_dir.path().join("lynx").join("my_org_2"))
                 .await
                 .unwrap(),
-            false,
             "No persistence expected for 'my_org_2', only 1 event was sent when 2 are required"
         );
 
@@ -244,11 +243,10 @@ mod test {
             panic!("Persistence did not occur");
         }
 
-        assert_eq!(
-            tokio::fs::try_exists(temp_dir.path().join("lynx").join("my_org_2"))
+        assert!(
+            !tokio::fs::try_exists(temp_dir.path().join("lynx").join("my_org_2"))
                 .await
                 .unwrap(),
-            false,
             "Persistence for 'my_org_2' still should not occurr"
         );
     }
