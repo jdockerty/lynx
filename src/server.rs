@@ -91,11 +91,27 @@ async fn health() -> &'static str {
     "OK"
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+// Incoming events are JSON blobs which do not indicate their "type", except by
+// being an array in batch and a singular JSON structure for 1 event.
+#[serde(untagged)]
+enum IngestType {
+    Single(Event),
+    Batch(Vec<Event>),
+}
+
 async fn ingest(
     State(mut state): State<ServerState>,
-    Json(event): Json<Event>,
+    Json(ingest_type): Json<IngestType>,
 ) -> impl IntoResponse {
-    state.ingest.handle_event(event).await;
+    match ingest_type {
+        IngestType::Single(event) => state.ingest.handle_event(event).await,
+        IngestType::Batch(events) => {
+            for event in events {
+                state.ingest.handle_event(event).await;
+            }
+        }
+    }
     StatusCode::CREATED
 }
 
