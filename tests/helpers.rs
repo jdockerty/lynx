@@ -116,6 +116,21 @@ impl Lynx {
         assert_eq!(response.status(), StatusCode::CREATED);
     }
 
+    pub async fn ingest_batch(&self, events: Vec<Event>) {
+        let json = serde_json::to_vec(&events).unwrap();
+
+        let response = self
+            .client
+            .post(format!("http://127.0.0.1:{}/{V1_INGEST_PATH}", self.port))
+            .header(CONTENT_TYPE, "application/json")
+            .body(json)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
     pub async fn query(&self, namespace: &str, sql: &str, format: QueryFormat) -> String {
         let query = InboundQuery {
             namespace: namespace.to_string(),

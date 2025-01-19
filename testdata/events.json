@@ -1,0 +1,18 @@
+[
+    {
+        "namespace": "my_org_1",
+        "name": "unit_temp",
+        "timestamp": 1734557462688037,
+        "precision": "microsecond",
+        "value": 19,
+        "metadata": {}
+    },
+    {
+        "namespace": "my_org_1",
+        "name": "cpu_usage",
+        "timestamp": 1734557462689129,
+        "precision": "microsecond",
+        "value": 81,
+        "metadata": {}
+    }
+]

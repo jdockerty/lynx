@@ -109,6 +109,49 @@ async fn persist_with_increased_counter() {
 }
 
 #[tokio::test]
+async fn ingest_batched_events() {
+    let lynx = Lynx::new(LynxOptions::new());
+    lynx.ensure_healthy().await;
+
+    let events = vec![
+        helpers::arbitrary_event(),
+        helpers::arbitrary_event(),
+        helpers::arbitrary_event(),
+    ];
+    let namespace = events[0].namespace.clone();
+
+    lynx.ingest_batch(events).await;
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let namespace_path = lynx.persist_path.path().join("lynx").join(namespace);
+        loop {
+            match std::fs::read_dir(&namespace_path) {
+                Ok(entries) => {
+                    // Short wait for persistence now that the path exists
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    for entry in entries {
+                        let entry = entry.unwrap();
+                        assert!(
+                            entry.file_name().to_string_lossy().contains(".parquet"),
+                            "Parquet files are persisted"
+                        );
+                        assert!(
+                            entry.metadata().unwrap().len() > 0,
+                            "Persisted file should not be blank"
+                        );
+                    }
+                    break;
+                }
+                Err(e) => eprintln!("Unable to read {}, retrying: {e}", namespace_path.display()),
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .expect("Persist event did not occur");
+}
+
+#[tokio::test]
 async fn cli() {
     let lynx = Lynx::new(LynxOptions::new().with_max_events(1));
     lynx.ensure_healthy().await;
