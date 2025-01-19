@@ -68,58 +68,56 @@ impl<O: ObjectStore> PersistActor<O> {
 
 pub async fn run_persist_actor<O: ObjectStore>(mut actor: PersistActor<O>) {
     while let Some(event) = actor.event_receiver.recv().await {
-        let in_mem_event = actor
+        let events_for_namespace = actor
             .events
             .entry(event.namespace.clone())
             .and_modify(|f| f.push(event.clone()))
             .or_insert_with(|| vec![event.clone()]);
 
-        if in_mem_event.len() == actor.max_events as usize {
+        if events_for_namespace.len() == actor.max_events as usize {
             eprintln!("Persisting events for {}", event.namespace);
-            for (namespace, events) in &actor.events {
-                let mut names = StringBuilder::new();
-                let mut values = UInt64Builder::new();
-                // TODO: precision hints
-                let mut timestamps = TimestampMicrosecondBuilder::new();
-
-                for event in events {
-                    names.append_value(&event.name);
-                    values.append_value(event.value as u64);
-                    timestamps.append_value(event.timestamp);
-                }
-
-                let names = Arc::new(names.finish()) as ArrayRef;
-                let values = Arc::new(values.finish()) as ArrayRef;
-                let timestamps = Arc::new(timestamps.finish()) as ArrayRef;
-
-                let batch = RecordBatch::try_from_iter(vec![
-                    ("timestamp", timestamps),
-                    ("name", names),
-                    ("value", values),
-                ])
-                .unwrap();
-
-                let mut v = Vec::new();
-                let mut writer = ArrowWriter::try_new(&mut v, batch.schema(), None).unwrap();
-                writer.write(&batch).unwrap();
-                writer.close().unwrap();
-
-                let now = chrono::Utc::now().timestamp_micros();
-                let filename = format!("lynx-{now}.parquet");
-                let path = object_store::path::Path::from(format!("lynx/{namespace}/{filename}"));
-                eprintln!("Persisting to {}/{path}", actor.persist_path.display());
-
-                let payload = PutPayload::from_bytes(v.into());
-                actor.object_store.put(&path, payload).await.unwrap();
-
-                actor
-                    .files
-                    .lock()
-                    .await
-                    .entry(event.namespace.clone())
-                    .or_insert_with(SessionContext::new);
+            let mut names = StringBuilder::new();
+            let mut values = UInt64Builder::new();
+            // TODO: precision hints
+            let mut timestamps = TimestampMicrosecondBuilder::new();
+            for event in events_for_namespace.iter() {
+                names.append_value(&event.name);
+                values.append_value(event.value as u64);
+                timestamps.append_value(event.timestamp);
             }
-            actor.events.clear();
+
+            let names = Arc::new(names.finish()) as ArrayRef;
+            let values = Arc::new(values.finish()) as ArrayRef;
+            let timestamps = Arc::new(timestamps.finish()) as ArrayRef;
+
+            let batch = RecordBatch::try_from_iter(vec![
+                ("timestamp", timestamps),
+                ("name", names),
+                ("value", values),
+            ])
+            .unwrap();
+
+            let mut v = Vec::new();
+            let mut writer = ArrowWriter::try_new(&mut v, batch.schema(), None).unwrap();
+            writer.write(&batch).unwrap();
+            writer.close().unwrap();
+
+            let now = chrono::Utc::now().timestamp_micros();
+            let filename = format!("lynx-{now}.parquet");
+            let namespace = &event.namespace;
+            let path = object_store::path::Path::from(format!("lynx/{namespace}/{filename}"));
+            eprintln!("Persisting to {}/{path}", actor.persist_path.display());
+
+            let payload = PutPayload::from_bytes(v.into());
+            actor.object_store.put(&path, payload).await.unwrap();
+
+            actor
+                .files
+                .lock()
+                .await
+                .entry(event.namespace.clone())
+                .or_insert_with(SessionContext::new);
+            events_for_namespace.clear();
         }
     }
 }
