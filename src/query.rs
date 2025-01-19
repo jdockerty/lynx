@@ -63,14 +63,19 @@ pub async fn handle_sql(
 
     match files.lock().await.get(namespace) {
         Some(ctx) => {
-            ctx.register_listing_table(namespace, namespace_path, list_opts.clone(), None, None)
+            if !ctx.table_exist(namespace).unwrap() {
+                ctx.register_listing_table(
+                    namespace,
+                    namespace_path,
+                    list_opts.clone(),
+                    None,
+                    None,
+                )
                 .await
                 .unwrap();
+            }
             let df = ctx.sql(&sql).await.unwrap();
-
             let batches = df.collect().await.unwrap();
-            // TODO: Deregistering after every request seems very wasteful
-            ctx.deregister_table(namespace).unwrap();
             Some(batches)
         }
         None => None,
