@@ -126,15 +126,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ),
                 Persistence::S3 => Arc::new(
                     object_store::aws::AmazonS3Builder::new()
-                        .with_bucket_name(aws.bucket.unwrap())
-                        .with_region(aws.region.unwrap())
-                        .with_endpoint(aws.endpoint.unwrap_or_default())
-                        .with_access_key_id(aws.access_key_id.unwrap())
-                        .with_secret_access_key(aws.secret_access_key.unwrap())
+                        .with_bucket_name(aws.bucket.as_ref().unwrap())
+                        .with_region(aws.region.as_ref().unwrap())
+                        .with_endpoint(aws.endpoint.clone().unwrap_or_default())
+                        .with_access_key_id(aws.access_key_id.as_ref().unwrap())
+                        .with_secret_access_key(aws.secret_access_key.as_ref().unwrap())
                         .with_allow_http(aws.allow_http.unwrap_or_default())
                         .build()?,
                 ),
             };
+
+            let persist_path = match persist_mode {
+                    Persistence::Local => persist_path.join("lynx"),
+                    Persistence::S3 => format!("{}/lynx", aws.bucket.unwrap()).into()
+                };
             server::run(
                 &host,
                 port,

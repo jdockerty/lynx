@@ -121,7 +121,7 @@ async fn query(
     Json(payload): Json<InboundQuery>,
 ) -> (StatusCode, impl IntoResponse) {
     let namespace_path = &format!(
-        "{}/lynx/{}",
+        "{}/{}",
         state.persist_path.to_string_lossy(),
         &payload.namespace
     );
