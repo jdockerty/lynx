@@ -165,7 +165,7 @@ mod test {
             format!("SELECT * FROM {namespace}"),
             &namespace_path.to_string_lossy(),
             Arc::new(object_store::memory::InMemory::new()),
-            Persistence::Local
+            Persistence::Local,
         )
         .await
         .expect("Some batches exist for the test");

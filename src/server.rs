@@ -69,14 +69,45 @@ impl ServerState {
     }
 }
 
-pub async fn run(
-    host: &str,
+pub struct ServerRunConfig {
+    host: String,
     port: u16,
     events_before_persist: i64,
     persist_path: PathBuf,
-    object_store: Arc<dyn ObjectStore>,
     persist_mode: Persistence,
-) -> Result<(), Box<dyn std::error::Error>> {
+    object_store: Arc<dyn ObjectStore>,
+}
+
+impl ServerRunConfig {
+    pub fn new(
+        host: &str,
+        port: u16,
+        events_before_persist: i64,
+        persist_path: PathBuf,
+        object_store: Arc<dyn ObjectStore>,
+        persist_mode: Persistence,
+    ) -> Self {
+        Self {
+            host: host.to_string(),
+            port,
+            events_before_persist,
+            persist_path,
+            persist_mode,
+            object_store,
+        }
+    }
+}
+
+pub async fn run(config: ServerRunConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let ServerRunConfig {
+        host,
+        port,
+        events_before_persist,
+        persist_path,
+        object_store,
+        persist_mode,
+    } = config;
+
     let files = Arc::new(Mutex::new(HashMap::new()));
     let state = ServerState::new(
         files,

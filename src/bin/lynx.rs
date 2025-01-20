@@ -3,7 +3,9 @@ use std::{path::PathBuf, sync::Arc};
 use clap::{Parser, Subcommand};
 use lynx::{
     query::QueryFormat,
-    server::{self, Persistence, LYNX_FORMAT_HEADER, V1_INGEST_PATH, V1_QUERY_PATH},
+    server::{
+        self, Persistence, ServerRunConfig, LYNX_FORMAT_HEADER, V1_INGEST_PATH, V1_QUERY_PATH,
+    },
 };
 use object_store::ObjectStore;
 use reqwest::{header::CONTENT_TYPE, StatusCode};
@@ -140,15 +142,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Persistence::Local => persist_path.join("lynx"),
                 Persistence::S3 => format!("{}/lynx", aws.bucket.unwrap()).into(),
             };
-            server::run(
+
+            let config = ServerRunConfig::new(
                 &host,
                 port,
                 events_before_persist,
                 persist_path,
                 Arc::new(object_store),
                 persist_mode,
-            )
-            .await?;
+            );
+            server::run(config).await?;
         }
         Commands::Write { host, port, file } => {
             let json = std::fs::read(&file).unwrap();
