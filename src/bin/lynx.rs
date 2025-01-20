@@ -137,15 +137,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let persist_path = match persist_mode {
-                    Persistence::Local => persist_path.join("lynx"),
-                    Persistence::S3 => format!("{}/lynx", aws.bucket.unwrap()).into()
-                };
+                Persistence::Local => persist_path.join("lynx"),
+                Persistence::S3 => format!("{}/lynx", aws.bucket.unwrap()).into(),
+            };
             server::run(
                 &host,
                 port,
                 events_before_persist,
                 persist_path,
                 Arc::new(object_store),
+                persist_mode,
             )
             .await?;
         }

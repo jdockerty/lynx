@@ -1,11 +1,15 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use datafusion::datasource::{file_format::parquet::ParquetFormat, listing::ListingOptions};
 use datafusion::prelude::SessionContext;
+use object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+
+use crate::server::Persistence;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InboundQuery {
@@ -58,21 +62,49 @@ pub async fn handle_sql(
     namespace: &str,
     sql: String,
     namespace_path: &str,
+    object_store: Arc<dyn ObjectStore>,
+    persist_mode: Persistence,
 ) -> Option<Vec<RecordBatch>> {
     let list_opts = ListingOptions::new(Arc::new(ParquetFormat::new()));
 
     match files.lock().await.get(namespace) {
         Some(ctx) => {
             if !ctx.table_exist(namespace).unwrap() {
-                ctx.register_listing_table(
-                    namespace,
-                    namespace_path,
-                    list_opts.clone(),
-                    None,
-                    None,
-                )
-                .await
-                .unwrap();
+                match persist_mode {
+                    Persistence::S3 => {
+                        // TODO: better way to do this by explicitly passing the
+                        // bucket name?
+                        // This leads to leaking the AWS config into the generic
+                        // `handle_sql` though too.
+                        let path = PathBuf::from(namespace_path);
+                        let bucket = path.parent().unwrap().parent().unwrap();
+                        let bucket_path = format!("s3://{}/lynx/", bucket.display());
+                        ctx.register_object_store(
+                            &reqwest::Url::parse(&bucket_path).unwrap(),
+                            Arc::clone(&object_store),
+                        );
+                        ctx.register_listing_table(
+                            namespace,
+                            format!("{bucket_path}{namespace}/"),
+                            list_opts.clone(),
+                            None,
+                            None,
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    Persistence::Local => {
+                        ctx.register_listing_table(
+                            namespace,
+                            namespace_path,
+                            list_opts.clone(),
+                            None,
+                            None,
+                        )
+                        .await
+                        .unwrap();
+                    }
+                }
             }
             let df = ctx.sql(&sql).await.unwrap();
             let batches = df.collect().await.unwrap();
