@@ -120,9 +120,12 @@ mod test {
 
     use arrow::array::{ArrayRef, Int64Array, RecordBatch};
     use datafusion::{assert_batches_eq, execution::context::SessionContext};
+    use object_store::ObjectStore;
     use parquet::arrow::ArrowWriter;
     use tempfile::TempDir;
     use tokio::sync::Mutex;
+
+    use crate::server::Persistence;
 
     use super::handle_sql;
 
@@ -161,6 +164,8 @@ mod test {
             namespace,
             format!("SELECT * FROM {namespace}"),
             &namespace_path.to_string_lossy(),
+            Arc::new(object_store::memory::InMemory::new()),
+            Persistence::Local
         )
         .await
         .expect("Some batches exist for the test");
