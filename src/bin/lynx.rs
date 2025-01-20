@@ -18,6 +18,7 @@ struct Cli {
 
 #[derive(Debug, Clone, Parser)]
 struct AwsOptions {
+    /// Region that the bucket resides in.
     #[arg(
         long = "aws-region",
         required_if_eq("persist_mode", "s3"),
@@ -25,6 +26,7 @@ struct AwsOptions {
     )]
     region: Option<String>,
 
+    /// Name of the bucket.
     #[arg(
         long = "aws-bucket",
         required_if_eq("persist_mode", "s3"),
@@ -32,6 +34,7 @@ struct AwsOptions {
     )]
     bucket: Option<String>,
 
+    /// Endpoint to use for the bucket connection.
     #[arg(long = "aws-endpoint", env = "AWS_ENDPOINT")]
     endpoint: Option<String>,
 
@@ -49,6 +52,7 @@ struct AwsOptions {
     )]
     secret_access_key: Option<String>,
 
+    /// Allow insecure (non-HTTPS) connections to the bucket.
     #[arg(long = "aws-allow-http", env = "AWS_ALLOW_HTTP")]
     allow_http: Option<bool>,
 }

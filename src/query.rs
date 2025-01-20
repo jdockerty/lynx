@@ -120,7 +120,6 @@ mod test {
 
     use arrow::array::{ArrayRef, Int64Array, RecordBatch};
     use datafusion::{assert_batches_eq, execution::context::SessionContext};
-    use object_store::ObjectStore;
     use parquet::arrow::ArrowWriter;
     use tempfile::TempDir;
     use tokio::sync::Mutex;
