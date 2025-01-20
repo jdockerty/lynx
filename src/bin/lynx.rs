@@ -5,12 +5,50 @@ use lynx::{
     query::QueryFormat,
     server::{self, Persistence, LYNX_FORMAT_HEADER, V1_INGEST_PATH, V1_QUERY_PATH},
 };
+use object_store::ObjectStore;
 use reqwest::{header::CONTENT_TYPE, StatusCode};
 
 #[derive(Debug, Clone, Parser)]
 struct Cli {
     #[clap(subcommand)]
     commands: Commands,
+}
+
+#[derive(Debug, Clone, Parser)]
+struct AwsOptions {
+    #[arg(
+        long = "aws-region",
+        required_if_eq("persist_mode", "s3"),
+        env = "AWS_REGION"
+    )]
+    region: Option<String>,
+
+    #[arg(
+        long = "aws-bucket",
+        required_if_eq("persist_mode", "s3"),
+        env = "LYNX_BUCKET"
+    )]
+    bucket: Option<String>,
+
+    #[arg(long = "aws-endpoint", env = "AWS_ENDPOINT")]
+    endpoint: Option<String>,
+
+    #[arg(
+        long = "aws-access-key-id",
+        required_if_eq("persist_mode", "s3"),
+        env = "AWS_ACCESS_KEY_ID"
+    )]
+    access_key_id: Option<String>,
+
+    #[arg(
+        long = "aws-secret-access-key",
+        required_if_eq("persist_mode", "s3"),
+        env = "AWS_SECRET_ACCESS_KEY"
+    )]
+    secret_access_key: Option<String>,
+
+    #[arg(long = "aws-allow-http", env = "AWS_ALLOW_HTTP")]
+    allow_http: Option<bool>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -36,6 +74,9 @@ enum Commands {
         /// All modes except 'local' require extra configuration.
         #[arg(long, env = "LYNX_PERSIST_MODE", default_value = "local")]
         persist_mode: Persistence,
+
+        #[clap(flatten)]
+        aws: AwsOptions,
     },
     /// Write data to lynx
     Write {
@@ -77,12 +118,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             events_before_persist,
             persist_path,
             persist_mode,
+            aws,
         } => {
-            let object_store = match persist_mode {
-                Persistence::Local => {
-                    object_store::local::LocalFileSystem::new_with_prefix(&persist_path)?
-                }
-                Persistence::S3 => todo!(),
+            let object_store: Arc<dyn ObjectStore> = match persist_mode {
+                Persistence::Local => Arc::new(
+                    object_store::local::LocalFileSystem::new_with_prefix(&persist_path)?,
+                ),
+                Persistence::S3 => Arc::new(
+                    object_store::aws::AmazonS3Builder::new()
+                        .with_bucket_name(aws.bucket.unwrap())
+                        .with_region(aws.region.unwrap())
+                        .with_endpoint(aws.endpoint.unwrap_or_default())
+                        .with_access_key_id(aws.access_key_id.unwrap())
+                        .with_secret_access_key(aws.secret_access_key.unwrap())
+                        .with_allow_http(aws.allow_http.unwrap_or_default())
+                        .build()?,
+                ),
             };
             server::run(
                 &host,
