@@ -105,7 +105,9 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
             let now = chrono::Utc::now().timestamp_micros();
             let filename = format!("lynx-{now}.parquet");
             let namespace = &event.namespace;
-            let path = object_store::path::Path::from(format!("lynx/{namespace}/{filename}"));
+            let event_name = &event.name;
+            let path =
+                object_store::path::Path::from(format!("lynx/{namespace}/{event_name}/{filename}"));
             eprintln!("Persisting to {path}");
 
             let payload = PutPayload::from_bytes(v.into());

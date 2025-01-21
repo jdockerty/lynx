@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::{collections::HashMap, path::PathBuf};
 
-use crate::query::{InboundQuery, QueryFormat};
+use crate::query::{parse_table_name_hack, InboundQuery, QueryFormat};
 use crate::{event::Event, persist::PersistHandle, query::handle_sql};
 use arrow::util::pretty::pretty_format_batches;
 use axum::http::HeaderMap;
@@ -163,14 +163,18 @@ async fn query(
     State(state): State<ServerState>,
     Json(payload): Json<InboundQuery>,
 ) -> (StatusCode, impl IntoResponse) {
+
+    let table_name = parse_table_name_hack(&payload.sql);
     let namespace_path = &format!(
-        "{}/{}",
+        "{}/{}/{}",
         state.persist_path.to_string_lossy(),
-        &payload.namespace
+        &payload.namespace,
+        table_name,
     );
     if let Some(record_batches) = handle_sql(
         state.files,
         &payload.namespace,
+        &table_name,
         payload.sql,
         namespace_path,
         state.object_store,

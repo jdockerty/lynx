@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use datafusion::datasource::{file_format::parquet::ParquetFormat, listing::ListingOptions};
+use datafusion::functions::string::split_part;
 use datafusion::prelude::SessionContext;
 use object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
@@ -60,6 +61,7 @@ impl From<&str> for QueryFormat {
 pub async fn handle_sql(
     files: Arc<Mutex<HashMap<String, SessionContext>>>,
     namespace: &str,
+    table_name: &str,
     sql: String,
     namespace_path: &str,
     object_store: Arc<dyn ObjectStore>,
@@ -78,14 +80,14 @@ pub async fn handle_sql(
                         // `handle_sql` though too.
                         let path = PathBuf::from(namespace_path);
                         let bucket = path.parent().unwrap().parent().unwrap();
-                        let bucket_path = format!("s3://{}/lynx/", bucket.display());
+                        let bucket_path = format!("s3://{}/lynx/{namespace}/{table_name}", bucket.display());
                         ctx.register_object_store(
                             &reqwest::Url::parse(&bucket_path).unwrap(),
                             Arc::clone(&object_store),
                         );
                         ctx.register_listing_table(
                             namespace,
-                            format!("{bucket_path}{namespace}/"),
+                            format!("{bucket_path}{namespace}/{table_name}/"),
                             list_opts.clone(),
                             None,
                             None,
@@ -95,7 +97,7 @@ pub async fn handle_sql(
                     }
                     Persistence::Local => {
                         ctx.register_listing_table(
-                            namespace,
+                            table_name,
                             namespace_path,
                             list_opts.clone(),
                             None,
@@ -114,6 +116,19 @@ pub async fn handle_sql(
     }
 }
 
+/// Temporary hack to parse table names.
+///
+/// This is very much a hack by assuming the query is simple.
+pub(crate) fn parse_table_name_hack(sql: &str) -> String {
+    let sanitised = sql.to_lowercase();
+    sanitised
+        .split_once("from")
+        .expect("Only simple queries are supported currently")
+        .1
+        .trim()
+        .to_string()
+}
+
 #[cfg(test)]
 mod test {
     use std::{collections::HashMap, sync::Arc};
@@ -126,13 +141,14 @@ mod test {
 
     use crate::server::Persistence;
 
-    use super::handle_sql;
+    use super::{handle_sql, parse_table_name_hack};
 
     #[tokio::test]
     async fn query() {
         let persist_path = TempDir::new().unwrap();
         let namespace = "my_namespace";
-        let namespace_path = &persist_path.path().join("lynx").join(namespace);
+        let table_name = "my_table";
+        let namespace_path = &persist_path.path().join("lynx").join(namespace).join(table_name);
 
         let files = Arc::new(Mutex::new(HashMap::new()));
         let ctx = SessionContext::new();
@@ -155,13 +171,11 @@ mod test {
 
         files.lock().await.insert(namespace.to_string(), ctx);
 
-        for f in std::fs::read_dir(namespace_path).unwrap() {
-            println!("{f:?}");
-        }
         let batches = handle_sql(
             files,
             namespace,
-            format!("SELECT * FROM {namespace}"),
+            table_name,
+            format!("SELECT * FROM {table_name}"),
             &namespace_path.to_string_lossy(),
             Arc::new(object_store::memory::InMemory::new()),
             Persistence::Local,
@@ -179,5 +193,17 @@ mod test {
             "| 3   |",
             "+-----+",
         ], &batches);
+    }
+
+    #[test]
+    fn table_name_hack() {
+        assert_eq!(
+            parse_table_name_hack("SELECT (id, name) from users"),
+            "users".to_string()
+        );
+        assert_eq!(
+            parse_table_name_hack("SELECT * from TEST_TABLE"),
+            "test_table".to_string()
+        );
     }
 }
