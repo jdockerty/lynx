@@ -46,33 +46,76 @@ impl Persistence {
 struct ServerState {
     ingest: PersistHandle,
     persist_path: PathBuf,
+    persist_mode: Persistence,
     files: Arc<Mutex<HashMap<String, SessionContext>>>,
+    object_store: Arc<dyn ObjectStore>,
 }
 
 impl ServerState {
-    pub fn new<O: ObjectStore>(
+    pub fn new(
         files: Arc<Mutex<HashMap<String, SessionContext>>>,
         max_events: i64,
         persist_path: PathBuf,
-        object_store: Arc<O>,
+        object_store: Arc<dyn ObjectStore>,
+        persist_mode: Persistence,
     ) -> Self {
         Self {
             files: Arc::clone(&files),
             persist_path: persist_path.clone(),
-            ingest: PersistHandle::new(files, persist_path, max_events, object_store),
+            ingest: PersistHandle::new(files, persist_path, max_events, object_store.clone()),
+            object_store,
+            persist_mode,
         }
     }
 }
 
-pub async fn run<O: ObjectStore>(
-    host: &str,
+pub struct ServerRunConfig {
+    host: String,
     port: u16,
     events_before_persist: i64,
     persist_path: PathBuf,
-    object_store: Arc<O>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    persist_mode: Persistence,
+    object_store: Arc<dyn ObjectStore>,
+}
+
+impl ServerRunConfig {
+    pub fn new(
+        host: &str,
+        port: u16,
+        events_before_persist: i64,
+        persist_path: PathBuf,
+        object_store: Arc<dyn ObjectStore>,
+        persist_mode: Persistence,
+    ) -> Self {
+        Self {
+            host: host.to_string(),
+            port,
+            events_before_persist,
+            persist_path,
+            persist_mode,
+            object_store,
+        }
+    }
+}
+
+pub async fn run(config: ServerRunConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let ServerRunConfig {
+        host,
+        port,
+        events_before_persist,
+        persist_path,
+        object_store,
+        persist_mode,
+    } = config;
+
     let files = Arc::new(Mutex::new(HashMap::new()));
-    let state = ServerState::new(files, events_before_persist, persist_path, object_store);
+    let state = ServerState::new(
+        files,
+        events_before_persist,
+        persist_path,
+        object_store,
+        persist_mode,
+    );
 
     let app = Router::new()
         .route("/health", get(health))
@@ -121,12 +164,19 @@ async fn query(
     Json(payload): Json<InboundQuery>,
 ) -> (StatusCode, impl IntoResponse) {
     let namespace_path = &format!(
-        "{}/lynx/{}",
+        "{}/{}",
         state.persist_path.to_string_lossy(),
         &payload.namespace
     );
-    if let Some(record_batches) =
-        handle_sql(state.files, &payload.namespace, payload.sql, namespace_path).await
+    if let Some(record_batches) = handle_sql(
+        state.files,
+        &payload.namespace,
+        payload.sql,
+        namespace_path,
+        state.object_store,
+        state.persist_mode,
+    )
+    .await
     {
         let format = match headers.get(LYNX_FORMAT_HEADER) {
             Some(v) => v.to_str().unwrap().into(),

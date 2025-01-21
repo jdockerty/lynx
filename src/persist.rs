@@ -20,11 +20,11 @@ pub struct PersistHandle {
 }
 
 impl PersistHandle {
-    pub fn new<O: ObjectStore>(
+    pub fn new(
         files: Arc<Mutex<HashMap<String, SessionContext>>>,
         persist_path: PathBuf,
         max_events: i64,
-        object_store: Arc<O>,
+        object_store: Arc<dyn ObjectStore>,
     ) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(100);
         let actor = PersistActor::new(max_events, rx, files, persist_path, object_store);
@@ -38,22 +38,22 @@ impl PersistHandle {
     }
 }
 
-pub struct PersistActor<O: ObjectStore> {
+pub struct PersistActor {
     max_events: i64,
     event_receiver: Receiver<Event>,
     events: HashMap<String, Vec<Event>>,
     files: Arc<Mutex<HashMap<String, SessionContext>>>,
     persist_path: PathBuf,
-    object_store: Arc<O>,
+    object_store: Arc<dyn ObjectStore>,
 }
 
-impl<O: ObjectStore> PersistActor<O> {
+impl PersistActor {
     pub fn new(
         max_events: i64,
         event_receiver: Receiver<Event>,
         files: Arc<Mutex<HashMap<String, SessionContext>>>,
         persist_path: PathBuf,
-        object_store: Arc<O>,
+        object_store: Arc<dyn ObjectStore>,
     ) -> Self {
         Self {
             files,
@@ -66,7 +66,7 @@ impl<O: ObjectStore> PersistActor<O> {
     }
 }
 
-pub async fn run_persist_actor<O: ObjectStore>(mut actor: PersistActor<O>) {
+pub async fn run_persist_actor(mut actor: PersistActor) {
     while let Some(event) = actor.event_receiver.recv().await {
         let events_for_namespace = actor
             .events
@@ -106,7 +106,7 @@ pub async fn run_persist_actor<O: ObjectStore>(mut actor: PersistActor<O>) {
             let filename = format!("lynx-{now}.parquet");
             let namespace = &event.namespace;
             let path = object_store::path::Path::from(format!("lynx/{namespace}/{filename}"));
-            eprintln!("Persisting to {}/{path}", actor.persist_path.display());
+            eprintln!("Persisting to {path}");
 
             let payload = PutPayload::from_bytes(v.into());
             actor.object_store.put(&path, payload).await.unwrap();

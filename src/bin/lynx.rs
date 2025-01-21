@@ -3,14 +3,58 @@ use std::{path::PathBuf, sync::Arc};
 use clap::{Parser, Subcommand};
 use lynx::{
     query::QueryFormat,
-    server::{self, Persistence, LYNX_FORMAT_HEADER, V1_INGEST_PATH, V1_QUERY_PATH},
+    server::{
+        self, Persistence, ServerRunConfig, LYNX_FORMAT_HEADER, V1_INGEST_PATH, V1_QUERY_PATH,
+    },
 };
+use object_store::ObjectStore;
 use reqwest::{header::CONTENT_TYPE, StatusCode};
 
 #[derive(Debug, Clone, Parser)]
 struct Cli {
     #[clap(subcommand)]
     commands: Commands,
+}
+
+#[derive(Debug, Clone, Parser)]
+struct AwsOptions {
+    /// Region that the bucket resides in.
+    #[arg(
+        long = "aws-region",
+        required_if_eq("persist_mode", "s3"),
+        env = "AWS_REGION"
+    )]
+    region: Option<String>,
+
+    /// Name of the bucket.
+    #[arg(
+        long = "aws-bucket",
+        required_if_eq("persist_mode", "s3"),
+        env = "LYNX_BUCKET"
+    )]
+    bucket: Option<String>,
+
+    /// Endpoint to use for the bucket connection.
+    #[arg(long = "aws-endpoint", env = "AWS_ENDPOINT")]
+    endpoint: Option<String>,
+
+    #[arg(
+        long = "aws-access-key-id",
+        required_if_eq("persist_mode", "s3"),
+        env = "AWS_ACCESS_KEY_ID"
+    )]
+    access_key_id: Option<String>,
+
+    #[arg(
+        long = "aws-secret-access-key",
+        required_if_eq("persist_mode", "s3"),
+        env = "AWS_SECRET_ACCESS_KEY"
+    )]
+    secret_access_key: Option<String>,
+
+    /// Allow insecure (non-HTTPS) connections to the bucket.
+    #[arg(long = "aws-allow-http", env = "AWS_ALLOW_HTTP")]
+    allow_http: Option<bool>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -36,6 +80,9 @@ enum Commands {
         /// All modes except 'local' require extra configuration.
         #[arg(long, env = "LYNX_PERSIST_MODE", default_value = "local")]
         persist_mode: Persistence,
+
+        #[clap(flatten)]
+        aws: AwsOptions,
     },
     /// Write data to lynx
     Write {
@@ -77,21 +124,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             events_before_persist,
             persist_path,
             persist_mode,
+            aws,
         } => {
-            let object_store = match persist_mode {
-                Persistence::Local => {
-                    object_store::local::LocalFileSystem::new_with_prefix(&persist_path)?
-                }
-                Persistence::S3 => todo!(),
+            let object_store: Arc<dyn ObjectStore> = match persist_mode {
+                Persistence::Local => Arc::new(
+                    object_store::local::LocalFileSystem::new_with_prefix(&persist_path)?,
+                ),
+                Persistence::S3 => Arc::new(
+                    object_store::aws::AmazonS3Builder::new()
+                        .with_bucket_name(aws.bucket.as_ref().unwrap())
+                        .with_region(aws.region.as_ref().unwrap())
+                        .with_endpoint(aws.endpoint.clone().unwrap_or_default())
+                        .with_access_key_id(aws.access_key_id.as_ref().unwrap())
+                        .with_secret_access_key(aws.secret_access_key.as_ref().unwrap())
+                        .with_allow_http(aws.allow_http.unwrap_or_default())
+                        .build()?,
+                ),
             };
-            server::run(
+
+            let persist_path = match persist_mode {
+                Persistence::Local => persist_path.join("lynx"),
+                Persistence::S3 => format!("{}/lynx", aws.bucket.unwrap()).into(),
+            };
+
+            let config = ServerRunConfig::new(
                 &host,
                 port,
                 events_before_persist,
                 persist_path,
                 Arc::new(object_store),
-            )
-            .await?;
+                persist_mode,
+            );
+            server::run(config).await?;
         }
         Commands::Write { host, port, file } => {
             let json = std::fs::read(&file).unwrap();
