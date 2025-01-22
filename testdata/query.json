@@ -1,4 +1,4 @@
 {
-    "namespace": "house",
-    "sql": "SELECT * from house"
+    "namespace": "my_org_1",
+    "sql": "SELECT * from cpu_usage"
 }
