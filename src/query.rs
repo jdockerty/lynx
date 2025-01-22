@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use datafusion::datasource::{file_format::parquet::ParquetFormat, listing::ListingOptions};
-use datafusion::functions::string::split_part;
 use datafusion::prelude::SessionContext;
+use datafusion::sql::parser::Statement;
+use datafusion::sql::sqlparser::ast::{SetExpr, TableFactor};
 use object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -80,7 +81,8 @@ pub async fn handle_sql(
                         // `handle_sql` though too.
                         let path = PathBuf::from(namespace_path);
                         let bucket = path.parent().unwrap().parent().unwrap();
-                        let bucket_path = format!("s3://{}/lynx/{namespace}/{table_name}", bucket.display());
+                        let bucket_path =
+                            format!("s3://{}/lynx/{namespace}/{table_name}", bucket.display());
                         ctx.register_object_store(
                             &reqwest::Url::parse(&bucket_path).unwrap(),
                             Arc::clone(&object_store),
@@ -119,14 +121,33 @@ pub async fn handle_sql(
 /// Temporary hack to parse table names.
 ///
 /// This is very much a hack by assuming the query is simple.
-pub(crate) fn parse_table_name_hack(sql: &str) -> String {
-    let sanitised = sql.to_lowercase();
-    sanitised
-        .split_once("from")
-        .expect("Only simple queries are supported currently")
-        .1
-        .trim()
-        .to_string()
+pub(crate) fn parse_table_name_hack(sql: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let statements = datafusion::sql::parser::DFParser::parse_sql(sql)?;
+    let statement = statements
+        .front()
+        .expect("Sub-queries are not supported at this time");
+
+    match statement {
+        Statement::Statement(stmt) => match *stmt.clone() {
+            datafusion::sql::sqlparser::ast::Statement::Query(query) => match *query.body {
+                SetExpr::Select(select) => {
+                    let table = select
+                        .from
+                        .iter()
+                        .take(1)
+                        .next()
+                        .expect("Query should be sent");
+                    match &table.relation {
+                        TableFactor::Table { name, .. } => Ok(name.to_string().to_lowercase()),
+                        _ => todo!(),
+                    }
+                }
+                _ => Err("Only simple SELECT queries are supported at this time".into()),
+            },
+            _ => Err("Only simple SELECT queries are supported at this time".into()),
+        },
+        _ => Err("Only simple SELECT queries are supported at this time".into()),
+    }
 }
 
 #[cfg(test)]
@@ -148,7 +169,11 @@ mod test {
         let persist_path = TempDir::new().unwrap();
         let namespace = "my_namespace";
         let table_name = "my_table";
-        let namespace_path = &persist_path.path().join("lynx").join(namespace).join(table_name);
+        let namespace_path = &persist_path
+            .path()
+            .join("lynx")
+            .join(namespace)
+            .join(table_name);
 
         let files = Arc::new(Mutex::new(HashMap::new()));
         let ctx = SessionContext::new();
@@ -198,12 +223,23 @@ mod test {
     #[test]
     fn table_name_hack() {
         assert_eq!(
-            parse_table_name_hack("SELECT (id, name) from users"),
+            parse_table_name_hack("SELECT * from myTable").unwrap(),
+            "mytable".to_string()
+        );
+        assert_eq!(
+            parse_table_name_hack("SELECT (id, name) from users").unwrap(),
             "users".to_string()
         );
         assert_eq!(
-            parse_table_name_hack("SELECT * from TEST_TABLE"),
+            parse_table_name_hack("SELECT * from TEST_TABLE").unwrap(),
             "test_table".to_string()
+        );
+        assert_eq!(
+            parse_table_name_hack(
+                "SELECT user_name from all_users WHERE name = 'John' AND location = 'UK'"
+            )
+            .unwrap(),
+            "all_users".to_string()
         );
     }
 }

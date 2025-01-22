@@ -163,8 +163,16 @@ async fn query(
     State(state): State<ServerState>,
     Json(payload): Json<InboundQuery>,
 ) -> (StatusCode, impl IntoResponse) {
-
-    let table_name = parse_table_name_hack(&payload.sql);
+    let table_name = match parse_table_name_hack(&payload.sql) {
+        Ok(table_name) => table_name,
+        Err(e) => {
+            eprintln!("query error: {e}");
+            return (
+                StatusCode::BAD_REQUEST,
+                "An unsupported query was provided".to_string(),
+            );
+        }
+    };
     let namespace_path = &format!(
         "{}/{}/{}",
         state.persist_path.to_string_lossy(),
