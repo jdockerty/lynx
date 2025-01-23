@@ -72,7 +72,7 @@ pub async fn handle_sql(
 
     match files.lock().await.get(namespace) {
         Some(ctx) => {
-            if !ctx.table_exist(namespace).unwrap() {
+            if !ctx.table_exist(table_name).unwrap() {
                 match persist_mode {
                     Persistence::S3 => {
                         // TODO: better way to do this by explicitly passing the
@@ -88,7 +88,7 @@ pub async fn handle_sql(
                             Arc::clone(&object_store),
                         );
                         ctx.register_listing_table(
-                            namespace,
+                            table_name,
                             format!("{bucket_path}{namespace}/{table_name}/"),
                             list_opts.clone(),
                             None,
