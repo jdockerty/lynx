@@ -2,7 +2,8 @@ use std::sync::Arc;
 use std::{collections::HashMap, path::PathBuf};
 
 use arrow::array::{
-    ArrayRef, RecordBatch, StringBuilder, TimestampMicrosecondBuilder, UInt64Builder,
+    ArrayBuilder, ArrayRef, MapBuilder, RecordBatch, StringBuilder, TimestampMicrosecondBuilder,
+    UInt64Builder,
 };
 use datafusion::execution::context::SessionContext;
 use object_store::{ObjectStore, PutPayload};
@@ -78,17 +79,32 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
             eprintln!("Persisting events for {}", event.namespace);
             let mut names = StringBuilder::new();
             let mut values = UInt64Builder::new();
-            // TODO: precision hints
             let mut timestamps = TimestampMicrosecondBuilder::new();
+            let mut metadata = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
+
             for event in events_for_namespace.iter() {
                 names.append_value(&event.name);
                 values.append_value(event.value as u64);
                 timestamps.append_value(event.timestamp);
+                match &event.metadata {
+                    serde_json::Value::Object(o) => {
+                        for (k, v) in o {
+                            metadata.keys().append_value(k.to_string());
+                            metadata.values().append_value(v.to_string());
+                        }
+                    }
+                    _ =>  {
+                        metadata.keys().append_null();
+                        metadata.values().append_null();
+                    }
+                };
             }
 
             let names = Arc::new(names.finish()) as ArrayRef;
             let values = Arc::new(values.finish()) as ArrayRef;
             let timestamps = Arc::new(timestamps.finish()) as ArrayRef;
+            // TODO: including metadata in parquet files
+            let _metadata = Arc::new(metadata.finish()) as ArrayRef;
 
             let batch = RecordBatch::try_from_iter(vec![
                 ("timestamp", timestamps),
@@ -97,8 +113,8 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
             ])
             .unwrap();
 
-            let mut v = Vec::new();
-            let mut writer = ArrowWriter::try_new(&mut v, batch.schema(), None).unwrap();
+            let mut buf = Vec::new();
+            let mut writer = ArrowWriter::try_new(&mut buf, batch.schema(), None).unwrap();
             writer.write(&batch).unwrap();
             writer.close().unwrap();
 
@@ -110,7 +126,7 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
                 object_store::path::Path::from(format!("lynx/{namespace}/{event_name}/{filename}"));
             eprintln!("Persisting to {path}");
 
-            let payload = PutPayload::from_bytes(v.into());
+            let payload = PutPayload::from_bytes(buf.into());
             actor.object_store.put(&path, payload).await.unwrap();
 
             actor
