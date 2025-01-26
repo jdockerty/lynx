@@ -163,7 +163,7 @@ async fn cli() {
     let query_input = NamedTempFile::new().unwrap();
     let query = InboundQuery {
         namespace: event.namespace.clone(),
-        sql: format!("SELECT * from {}", event.namespace),
+        sql: format!("SELECT * from {}", event.name),
     };
     serde_json::to_writer(&query_input, &query).unwrap();
 
