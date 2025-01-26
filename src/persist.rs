@@ -43,6 +43,7 @@ pub struct PersistActor {
     event_receiver: Receiver<Event>,
     events: HashMap<String, Vec<Event>>,
     files: Arc<Mutex<HashMap<String, SessionContext>>>,
+    #[allow(dead_code)]
     persist_path: PathBuf,
     object_store: Arc<dyn ObjectStore>,
 }
