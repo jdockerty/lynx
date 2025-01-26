@@ -1,3 +1,5 @@
+use std::default::Default;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -18,9 +20,11 @@ pub struct Event {
     pub metadata: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "lowercase")]
 pub enum Precision {
     Nanosecond,
+    #[default]
     Microsecond,
 }
