@@ -9,19 +9,19 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
-    /// Namespace where data should be written.
-    pub namespace: String,
+    /// Arbitrary key-value metadata associated with the event.
+    pub metadata: Value,
     /// Name of the event which is being recorded.
     pub name: String,
-    /// Timestamp that the event occurred.
-    pub timestamp: i64,
+    /// Namespace where data should be written.
+    pub namespace: String,
     /// Optional precision of the provided timestamp. When this is not provided,
     /// nanosecond precision is assumed.
     pub precision: Option<Precision>,
+    /// Timestamp that the event occurred.
+    pub timestamp: i64,
     /// Value associated with the event.
     pub value: i64,
-    /// Arbitrary key-value metadata associated with the event.
-    pub metadata: Value,
 }
 
 impl Event {

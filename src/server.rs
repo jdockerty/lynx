@@ -44,11 +44,11 @@ impl Persistence {
 
 #[derive(Clone)]
 struct ServerState {
-    ingest: PersistHandle,
-    persist_path: PathBuf,
-    persist_mode: Persistence,
     files: Arc<Mutex<HashMap<String, SessionContext>>>,
+    ingest: PersistHandle,
     object_store: Arc<dyn ObjectStore>,
+    persist_mode: Persistence,
+    persist_path: PathBuf,
 }
 
 impl ServerState {
@@ -70,12 +70,12 @@ impl ServerState {
 }
 
 pub struct ServerRunConfig {
-    host: String,
-    port: u16,
     events_before_persist: i64,
-    persist_path: PathBuf,
-    persist_mode: Persistence,
+    host: String,
     object_store: Arc<dyn ObjectStore>,
+    persist_mode: Persistence,
+    persist_path: PathBuf,
+    port: u16,
 }
 
 impl ServerRunConfig {

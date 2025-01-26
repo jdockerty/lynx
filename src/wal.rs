@@ -10,11 +10,11 @@ const LYNX_WAL_HEADER: &str = "LYNX\n";
 
 /// A Write-Ahead Log (WAL) implementation.
 pub struct Wal {
-    id: u64,
-    dir: PathBuf,
     buffer: Vec<u8>,
-    handle: File,
     buffer_size: usize,
+    dir: PathBuf,
+    handle: File,
+    id: u64,
     offset: usize,
 }
 
