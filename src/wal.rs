@@ -1,3 +1,5 @@
+#![expect(dead_code)]
+
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -20,7 +22,7 @@ pub struct Wal {
 impl Wal {
     pub fn new(dir: PathBuf, buffer_size: Option<usize>) -> Self {
         let id = 0;
-        let wal_path = dir.clone().join(format!("{}.wal", id.to_string()));
+        let wal_path = dir.clone().join(format!("{id}.wal"));
         let mut file_handle = File::create_new(&wal_path).unwrap();
         file_handle.write_all(LYNX_WAL_HEADER.as_bytes()).unwrap();
         let buffer_size = buffer_size.unwrap_or(8096);
@@ -41,16 +43,12 @@ impl Wal {
         let precision = event.precision.clone().unwrap_or_default() as u8;
         let value = &event.value.to_be_bytes();
 
-        self.buffer.write(namespace).unwrap();
-        write_size += namespace.len();
-        self.buffer.write(name).unwrap();
-        write_size += name.len();
-        self.buffer.write(timestamp).unwrap();
-        write_size += timestamp.len();
+        write_size += self.buffer.write(namespace).unwrap();
+        write_size += self.buffer.write(name).unwrap();
+        write_size += self.buffer.write(timestamp).unwrap();
         self.buffer.write_u8(precision).unwrap();
         write_size += std::mem::size_of::<Precision>();
-        self.buffer.write(value).unwrap();
-        write_size += value.len();
+        write_size += self.buffer.write(value).unwrap();
         // TODO: metadata is ignored for now.
         // self.buffer.write(&event.metadata.to_string().as_bytes()).unwrap();
 
@@ -89,11 +87,11 @@ mod test {
         };
         let mut wal = Wal::new(dir.path().to_path_buf(), None);
 
-        let expected_size = &event.namespace.as_bytes().len()
-            + &event.name.as_bytes().len()
-            + &event.timestamp.to_be_bytes().len()
+        let expected_size = event.namespace.len()
+            + event.name.len()
+            + event.timestamp.to_be_bytes().len()
             + Precision::Microsecond as usize
-            + &event.value.to_be_bytes().len();
+            + event.value.to_be_bytes().len();
 
         let result = wal.append(&event).unwrap();
         assert_eq!(result, expected_size);
@@ -104,7 +102,7 @@ mod test {
                 .metadata()
                 .unwrap()
                 .len(),
-            LYNX_WAL_HEADER.as_bytes().len() as u64,
+            LYNX_WAL_HEADER.len() as u64,
             "WAL was not flushed, only header should exist"
         );
     }
@@ -123,11 +121,11 @@ mod test {
         };
         let mut wal = Wal::new(dir.path().to_path_buf(), Some(10));
 
-        let expected_size = &event.namespace.as_bytes().len()
-            + &event.name.as_bytes().len()
-            + &event.timestamp.to_be_bytes().len()
+        let expected_size = event.namespace.len()
+            + event.name.len()
+            + event.timestamp.to_be_bytes().len()
             + Precision::Microsecond as usize
-            + &event.value.to_be_bytes().len();
+            + event.value.to_be_bytes().len();
 
         let result = wal.append(&event).unwrap();
         assert_eq!(result, expected_size);
