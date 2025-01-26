@@ -1,12 +1,10 @@
 #![expect(dead_code)]
 
-use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
+use std::{fs::File, io::Seek};
 
-use byteorder::WriteBytesExt;
-
-use crate::event::{Event, Precision};
+use crate::event::Event;
 
 const LYNX_WAL_HEADER: &str = "LYNX\n";
 
@@ -17,14 +15,29 @@ pub struct Wal {
     buffer: Vec<u8>,
     handle: File,
     buffer_size: usize,
+    offset: usize,
 }
 
 impl Wal {
-    pub fn new(dir: PathBuf, buffer_size: Option<usize>) -> Self {
-        let id = 0;
+    pub fn new(dir: PathBuf, id: u64, buffer_size: Option<usize>) -> Self {
         let wal_path = dir.clone().join(format!("{id}.wal"));
-        let mut file_handle = File::create_new(&wal_path).unwrap();
-        file_handle.write_all(LYNX_WAL_HEADER.as_bytes()).unwrap();
+        let (new, mut file_handle) = match File::create_new(&wal_path) {
+            Ok(handle) => (true, handle),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (
+                false,
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .append(true)
+                    .open(&wal_path)
+                    .unwrap(),
+            ),
+            Err(e) => panic!("{e}"),
+        };
+
+        if new {
+            file_handle.write_all(LYNX_WAL_HEADER.as_bytes()).unwrap();
+        }
+
         let buffer_size = buffer_size.unwrap_or(8096);
         Self {
             id,
@@ -32,33 +45,43 @@ impl Wal {
             handle: file_handle,
             buffer_size,
             buffer: Vec::with_capacity(buffer_size),
+            offset: 0,
         }
     }
 
+    pub(crate) fn flush(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.handle.write_all(&self.buffer)?;
+        self.handle.sync_all()?;
+        self.offset += self.buffer.len();
+        self.buffer.clear();
+        Ok(())
+    }
+
     pub fn append(&mut self, event: &Event) -> Result<usize, Box<dyn std::error::Error>> {
-        let mut write_size = 0;
-        let namespace = event.namespace.as_bytes();
-        let name = event.name.as_bytes();
-        let timestamp = &event.timestamp.to_be_bytes();
-        let precision = event.precision.clone().unwrap_or_default() as u8;
-        let value = &event.value.to_be_bytes();
-
-        write_size += self.buffer.write(namespace)?;
-        write_size += self.buffer.write(name)?;
-        write_size += self.buffer.write(timestamp)?;
-        self.buffer.write_u8(precision)?;
-        write_size += std::mem::size_of::<Precision>();
-        write_size += self.buffer.write(value)?;
-        // TODO: metadata is ignored for now.
-        // self.buffer.write(&event.metadata.to_string().as_bytes())?;
-
+        let data = event.as_bytes();
+        self.buffer.write_all(&data).unwrap();
         if self.buffer.len() >= self.buffer_size {
-            self.handle.write_all(&self.buffer)?;
-            self.handle.sync_all()?;
-            self.buffer.clear();
+            self.flush()?;
         }
 
-        Ok(write_size)
+        Ok(data.len())
+    }
+
+    fn read(&mut self) -> Option<Event> {
+        Event::from_reader(&mut self.handle)
+    }
+
+    pub fn replay(&mut self) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+        self.handle
+            .seek(std::io::SeekFrom::Start(LYNX_WAL_HEADER.len() as u64))
+            .unwrap();
+
+        let mut events = Vec::new();
+        while let Some(event) = self.read() {
+            events.push(event);
+        }
+
+        Ok(events)
     }
 }
 
@@ -85,15 +108,10 @@ mod test {
             value: 10,
             metadata: serde_json::Value::Null,
         };
-        let mut wal = Wal::new(dir.path().to_path_buf(), None);
-
-        let expected_size = event.namespace.len()
-            + event.name.len()
-            + event.timestamp.to_be_bytes().len()
-            + Precision::Microsecond as usize
-            + event.value.to_be_bytes().len();
-
+        let mut wal = Wal::new(dir.path().to_path_buf(), 0, None);
         let result = wal.append(&event).unwrap();
+
+        let expected_size = event.as_bytes().len();
         assert_eq!(result, expected_size);
         assert_eq!(wal.buffer.len(), expected_size);
         assert_eq!(
@@ -108,9 +126,10 @@ mod test {
     }
 
     #[test]
-    fn flush_buffer() {
-        let dir = TempDir::new().expect("Can create temp dir for test");
+    fn replay_wal() {
+        let dir = TempDir::new().unwrap();
 
+        let mut wal = Wal::new(dir.path().to_path_buf(), 0, None);
         let event = Event {
             namespace: "my_ns".to_string(),
             name: "my_event".to_string(),
@@ -119,25 +138,20 @@ mod test {
             value: 10,
             metadata: serde_json::Value::Null,
         };
-        let mut wal = Wal::new(dir.path().to_path_buf(), Some(10));
+        wal.append(&event).unwrap();
+        wal.flush().unwrap();
 
-        let expected_size = event.namespace.len()
-            + event.name.len()
-            + event.timestamp.to_be_bytes().len()
-            + Precision::Microsecond as usize
-            + event.value.to_be_bytes().len();
+        drop(wal);
 
-        let result = wal.append(&event).unwrap();
-        assert_eq!(result, expected_size);
-        assert_eq!(wal.buffer.len(), 0, "Expected WAL buffer flush");
+        let mut wal = Wal::new(dir.path().to_path_buf(), 0, None);
+        let events = wal.replay().unwrap();
+        assert_eq!(events.len(), 1);
         assert_eq!(
-            std::fs::File::open(dir.path().join("0.wal"))
-                .unwrap()
-                .metadata()
-                .unwrap()
-                .len(),
-            35,
-            "WAL was flushed, file size is expected to be header + the write"
+            events[0],
+            Event {
+                precision: Some(Precision::Microsecond), // Default is appended when writing to WAL, rather than None
+                ..event
+            }
         );
     }
 }
