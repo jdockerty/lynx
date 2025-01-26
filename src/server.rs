@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::{collections::HashMap, path::PathBuf};
 
 use crate::query::{parse_table_name_hack, InboundQuery, QueryFormat};
+use crate::wal::WalHandle;
 use crate::{event::Event, persist::PersistHandle, query::handle_sql};
 use arrow::util::pretty::pretty_format_batches;
 use axum::http::HeaderMap;
@@ -46,6 +47,7 @@ impl Persistence {
 struct ServerState {
     files: Arc<Mutex<HashMap<String, SessionContext>>>,
     ingest: PersistHandle,
+    wal: WalHandle,
     object_store: Arc<dyn ObjectStore>,
     persist_mode: Persistence,
     persist_path: PathBuf,
@@ -56,6 +58,8 @@ impl ServerState {
         files: Arc<Mutex<HashMap<String, SessionContext>>>,
         max_events: i64,
         persist_path: PathBuf,
+        wal_dir: PathBuf,
+        wal_buffer_size: usize,
         object_store: Arc<dyn ObjectStore>,
         persist_mode: Persistence,
     ) -> Self {
@@ -63,6 +67,7 @@ impl ServerState {
             files: Arc::clone(&files),
             persist_path: persist_path.clone(),
             ingest: PersistHandle::new(files, persist_path, max_events, object_store.clone()),
+            wal: WalHandle::new(wal_dir, 0, wal_buffer_size),
             object_store,
             persist_mode,
         }
@@ -75,15 +80,20 @@ pub struct ServerRunConfig {
     object_store: Arc<dyn ObjectStore>,
     persist_mode: Persistence,
     persist_path: PathBuf,
+    wal_dir: PathBuf,
+    wal_buffer_size: usize,
     port: u16,
 }
 
 impl ServerRunConfig {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         host: &str,
         port: u16,
         events_before_persist: i64,
         persist_path: PathBuf,
+        wal_dir: PathBuf,
+        wal_buffer_size: usize,
         object_store: Arc<dyn ObjectStore>,
         persist_mode: Persistence,
     ) -> Self {
@@ -92,6 +102,8 @@ impl ServerRunConfig {
             port,
             events_before_persist,
             persist_path,
+            wal_dir,
+            wal_buffer_size,
             persist_mode,
             object_store,
         }
@@ -104,6 +116,8 @@ pub async fn run(config: ServerRunConfig) -> Result<(), Box<dyn std::error::Erro
         port,
         events_before_persist,
         persist_path,
+        wal_dir,
+        wal_buffer_size,
         object_store,
         persist_mode,
     } = config;
@@ -113,6 +127,8 @@ pub async fn run(config: ServerRunConfig) -> Result<(), Box<dyn std::error::Erro
         files,
         events_before_persist,
         persist_path,
+        wal_dir,
+        wal_buffer_size,
         object_store,
         persist_mode,
     );
@@ -148,9 +164,13 @@ async fn ingest(
     Json(ingest_type): Json<IngestType>,
 ) -> impl IntoResponse {
     match ingest_type {
-        IngestType::Single(event) => state.ingest.handle_event(event).await,
+        IngestType::Single(event) => {
+            state.wal.append(event.clone()).await;
+            state.ingest.handle_event(event).await;
+        }
         IngestType::Batch(events) => {
             for event in events {
+                state.wal.append(event.clone()).await;
                 state.ingest.handle_event(event).await;
             }
         }

@@ -81,6 +81,13 @@ enum Commands {
         #[arg(long, env = "LYNX_PERSIST_PATH", default_value = "/tmp")]
         persist_path: PathBuf,
 
+        /// Path where lynx will persist parquet files.
+        #[arg(long, env = "LYNX_WAL_DIR", default_value = "./")]
+        wal_dir: PathBuf,
+
+        #[arg(long, env = "LYNX_WAL_BUFFER_SIZE", default_value = "8096")]
+        wal_buffer_size: usize,
+
         #[arg(long, env = "LYNX_PORT", default_value = "3000")]
         port: u16,
     },
@@ -123,6 +130,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             port,
             events_before_persist,
             persist_path,
+            wal_dir,
+            wal_buffer_size,
             persist_mode,
             aws,
         } => {
@@ -148,12 +157,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             eprintln!("Persist mode: {}", persist_mode.as_str());
             eprintln!("Persist path: {}", persist_path.display());
+            eprintln!("WAL path: {}", wal_dir.display());
 
             let config = ServerRunConfig::new(
                 &host,
                 port,
                 events_before_persist,
                 persist_path,
+                wal_dir,
+                wal_buffer_size,
                 Arc::new(object_store),
                 persist_mode,
             );

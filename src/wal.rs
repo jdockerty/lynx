@@ -4,6 +4,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::{fs::File, io::Seek};
 
+use tokio::sync::mpsc::{Receiver, Sender};
+
 use crate::event::Event;
 
 const LYNX_WAL_HEADER: &str = "LYNX\n";
@@ -82,6 +84,58 @@ impl Wal {
         }
 
         Ok(events)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WalHandle {
+    events_queue: Sender<Event>,
+}
+
+impl WalHandle {
+    pub fn new(wal_dir: PathBuf, id: u64, buffer_size: usize) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
+        let actor = WalActor::new(id, wal_dir, buffer_size, rx);
+        tokio::spawn(run_wal_actor(actor));
+
+        Self { events_queue: tx }
+    }
+
+    /// Append events to the WAL.
+    pub async fn append(&mut self, event: Event) {
+        eprintln!("Appending event {event:?}");
+        self.events_queue.send(event).await.unwrap();
+    }
+}
+
+pub struct WalActor {
+    buffer_size: usize,
+    dir: PathBuf,
+    event_receiver: Receiver<Event>,
+    id: u64,
+}
+
+impl WalActor {
+    pub fn new(
+        id: u64,
+        wal_dir: PathBuf,
+        buffer_size: usize,
+        event_receiver: Receiver<Event>,
+    ) -> Self {
+        Self {
+            id,
+            buffer_size,
+            dir: wal_dir,
+            event_receiver,
+        }
+    }
+}
+
+pub async fn run_wal_actor(mut actor: WalActor) {
+    let mut wal = Wal::new(actor.dir, actor.id, Some(actor.buffer_size));
+
+    while let Some(event) = actor.event_receiver.recv().await {
+        wal.append(&event).unwrap();
     }
 }
 
