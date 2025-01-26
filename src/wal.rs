@@ -43,18 +43,18 @@ impl Wal {
         let precision = event.precision.clone().unwrap_or_default() as u8;
         let value = &event.value.to_be_bytes();
 
-        write_size += self.buffer.write(namespace).unwrap();
-        write_size += self.buffer.write(name).unwrap();
-        write_size += self.buffer.write(timestamp).unwrap();
-        self.buffer.write_u8(precision).unwrap();
+        write_size += self.buffer.write(namespace)?;
+        write_size += self.buffer.write(name)?;
+        write_size += self.buffer.write(timestamp)?;
+        self.buffer.write_u8(precision)?;
         write_size += std::mem::size_of::<Precision>();
-        write_size += self.buffer.write(value).unwrap();
+        write_size += self.buffer.write(value)?;
         // TODO: metadata is ignored for now.
-        // self.buffer.write(&event.metadata.to_string().as_bytes()).unwrap();
+        // self.buffer.write(&event.metadata.to_string().as_bytes())?;
 
         if self.buffer.len() >= self.buffer_size {
-            self.handle.write_all(&self.buffer).unwrap();
-            self.handle.sync_all().unwrap();
+            self.handle.write_all(&self.buffer)?;
+            self.handle.sync_all()?;
             self.buffer.clear();
         }
 
