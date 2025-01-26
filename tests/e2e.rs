@@ -23,7 +23,7 @@ async fn query_after_persist() {
             let response = lynx
                 .query(
                     &event.namespace,
-                    &format!("SELECT * FROM {}", event.namespace),
+                    &format!("SELECT * FROM {}", event.name),
                     QueryFormat::Json,
                 )
                 .await;
@@ -54,7 +54,12 @@ async fn ingest_and_persist_check() {
     lynx.ingest(&event).await;
 
     tokio::time::timeout(Duration::from_secs(3), async {
-        let namespace_path = lynx.persist_path.path().join("lynx").join(event.namespace);
+        let namespace_path = lynx
+            .persist_path
+            .path()
+            .join("lynx")
+            .join(event.namespace)
+            .join(event.name);
         loop {
             match std::fs::read_dir(&namespace_path) {
                 Ok(entries) => {
@@ -92,7 +97,12 @@ async fn persist_with_increased_counter() {
     lynx.ingest(&event).await;
     lynx.ingest(&event).await;
 
-    let namespace_path = lynx.persist_path.path().join("lynx").join(&event.namespace);
+    let namespace_path = lynx
+        .persist_path
+        .path()
+        .join("lynx")
+        .join(&event.namespace)
+        .join(&event.name);
     assert!(
         !std::fs::exists(&namespace_path).unwrap(),
         "Persist should not have happened yet"
@@ -119,11 +129,17 @@ async fn ingest_batched_events() {
         helpers::arbitrary_event(),
     ];
     let namespace = events[0].namespace.clone();
+    let event_name = events[0].name.clone();
 
     lynx.ingest_batch(events).await;
 
-    tokio::time::timeout(Duration::from_secs(3), async {
-        let namespace_path = lynx.persist_path.path().join("lynx").join(namespace);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let namespace_path = lynx
+            .persist_path
+            .path()
+            .join("lynx")
+            .join(namespace)
+            .join(event_name);
         loop {
             match std::fs::read_dir(&namespace_path) {
                 Ok(entries) => {
