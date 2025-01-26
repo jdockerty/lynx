@@ -146,6 +146,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Persistence::Local => persist_path.join("lynx"),
                 Persistence::S3 => format!("{}/lynx", aws.bucket.unwrap()).into(),
             };
+            eprintln!("Persist mode: {}", persist_mode.as_str());
+            eprintln!("Persist path: {}", persist_path.display());
 
             let config = ServerRunConfig::new(
                 &host,
