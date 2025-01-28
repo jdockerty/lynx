@@ -69,7 +69,7 @@ impl Wal {
         Ok(data.len())
     }
 
-    fn read(&mut self) -> Option<Event> {
+    fn read(&mut self) -> Result<Event, Box<dyn std::error::Error>> {
         Event::from_reader(&mut self.handle)
     }
 
@@ -79,8 +79,11 @@ impl Wal {
             .unwrap();
 
         let mut events = Vec::new();
-        while let Some(event) = self.read() {
-            events.push(event);
+        loop {
+            match self.read() {
+                Ok(event) => events.push(event),
+                Err(_e) => break,
+            }
         }
 
         Ok(events)

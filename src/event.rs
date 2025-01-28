@@ -1,7 +1,4 @@
-use std::{
-    default::Default,
-    io::{Read, Write},
-};
+use std::io::{Read, Write};
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use serde::{Deserialize, Serialize};
@@ -45,31 +42,31 @@ impl Event {
         buf
     }
 
-    pub fn from_reader(mut buf: impl Read) -> Option<Event> {
+    pub fn from_reader(mut buf: impl Read) -> Result<Event, Box<dyn std::error::Error>> {
         let sz = match buf.read_u64::<BigEndian>() {
             Ok(sz) => sz,
-            Err(_) => return None,
+            Err(e) => return Err(e.into()),
         };
 
         let mut namespace_buf = vec![0; sz as usize];
-        buf.read_exact(&mut namespace_buf).unwrap();
-        let namespace = String::from_utf8(namespace_buf).unwrap();
+        buf.read_exact(&mut namespace_buf)?;
+        let namespace = String::from_utf8(namespace_buf)?;
 
-        let sz = buf.read_u64::<BigEndian>().unwrap();
+        let sz = buf.read_u64::<BigEndian>()?;
         let mut name_buf = vec![0; sz as usize];
 
-        buf.read_exact(&mut name_buf).unwrap();
-        let name = String::from_utf8(name_buf).unwrap();
+        buf.read_exact(&mut name_buf)?;
+        let name = String::from_utf8(name_buf)?;
 
-        let timestamp = buf.read_i64::<BigEndian>().unwrap();
-        let precision = buf.read_u8().unwrap();
-        let value = buf.read_i64::<BigEndian>().unwrap();
+        let timestamp = buf.read_i64::<BigEndian>()?;
+        let precision = buf.read_u8()?;
+        let value = buf.read_i64::<BigEndian>()?;
 
-        Some(Event {
+        Ok(Event {
             namespace,
             name,
             timestamp,
-            precision: Some(Precision::try_from(precision).unwrap()),
+            precision: Some(Precision::try_from(precision)?),
             value,
             metadata: serde_json::Value::Null,
         })
