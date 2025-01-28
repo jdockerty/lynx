@@ -140,11 +140,13 @@ pub async fn run_wal_actor(mut actor: WalActor) {
 
 #[cfg(test)]
 mod test {
+    use std::time::Duration;
+
     use tempfile::TempDir;
 
     use crate::{
         event::{Event, Precision},
-        wal::LYNX_WAL_HEADER,
+        wal::{WalHandle, LYNX_WAL_HEADER},
     };
 
     use super::Wal;
@@ -206,5 +208,31 @@ mod test {
                 ..event
             }
         );
+    }
+
+    #[tokio::test]
+    async fn wal_actor() {
+        let dir = TempDir::new().unwrap();
+        let event = Event {
+            namespace: "my_ns".to_string(),
+            name: "my_event".to_string(),
+            timestamp: 10000,
+            precision: Some(Precision::Microsecond),
+            value: 10,
+            metadata: serde_json::Value::Null,
+        };
+        let mut wal_actor = WalHandle::new(dir.path().to_path_buf(), 0, 5);
+        for _ in 0..2 {
+            wal_actor.append(event.clone()).await;
+        }
+        tokio::time::sleep(Duration::from_millis(750)).await;
+        drop(wal_actor);
+
+        let mut wal = Wal::new(dir.path().to_path_buf(), 0, None);
+        let events = wal.replay().unwrap();
+        assert_eq!(events.len(), 2);
+        for replayed_event in events {
+            assert_eq!(replayed_event, event);
+        }
     }
 }
