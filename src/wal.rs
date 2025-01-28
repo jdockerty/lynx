@@ -103,7 +103,6 @@ impl WalHandle {
 
     /// Append events to the WAL.
     pub async fn append(&mut self, event: Event) {
-        eprintln!("Appending event {event:?}");
         self.events_queue.send(event).await.unwrap();
     }
 }

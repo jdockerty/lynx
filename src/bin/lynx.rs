@@ -169,7 +169,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Arc::new(object_store),
                 persist_mode,
             );
-            server::run(config).await?;
+
+            tokio::select! {
+                _ = server::run(config) => {
+                    eprintln!("Server process exited");
+                },
+                _ = tokio::signal::ctrl_c() => {
+                    eprintln!("Shutting down server");
+                }
+            };
         }
         Commands::Write { host, port, file } => {
             let json = std::fs::read(&file).unwrap();
