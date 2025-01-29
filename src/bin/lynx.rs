@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use clap::{Parser, Subcommand};
+use clap_verbosity_flag::{InfoLevel, Verbosity};
 use lynx::{
     query::QueryFormat,
     server::{
@@ -9,12 +10,15 @@ use lynx::{
 };
 use object_store::ObjectStore;
 use reqwest::{header::CONTENT_TYPE, StatusCode};
-use tracing::{info, level_filters::LevelFilter, warn};
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Parser)]
 struct Cli {
     #[clap(subcommand)]
     commands: Commands,
+
+    #[command(flatten)]
+    verbose: Verbosity<InfoLevel>,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -126,7 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     tracing_subscriber::fmt::fmt()
-        .with_max_level(LevelFilter::DEBUG)
+        .with_max_level(cli.verbose)
         .init();
 
     match cli.commands {

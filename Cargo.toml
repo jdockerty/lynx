@@ -10,6 +10,7 @@ axum = { version = "0.7.9", features = ["macros"] }
 byteorder = "1.5.0"
 chrono = "0.4.39"
 clap = { version = "4.5.26", features = ["derive", "env"] }
+clap-verbosity-flag = { version = "3.0.2", default-features = false, features = ["tracing"] }
 datafusion = "43.0.0"
 object_store = { version = "0.11.2", features = ["aws"] }
 parquet = "53.3.0"
