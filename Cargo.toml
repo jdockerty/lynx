@@ -10,6 +10,7 @@ axum = { version = "0.7.9", features = ["macros"] }
 byteorder = "1.5.0"
 chrono = "0.4.39"
 clap = { version = "4.5.26", features = ["derive", "env"] }
+clap-verbosity-flag = { version = "3.0.2", default-features = false, features = ["tracing"] }
 datafusion = "43.0.0"
 object_store = { version = "0.11.2", features = ["aws"] }
 parquet = "53.3.0"
@@ -17,6 +18,8 @@ reqwest = "0.12.12"
 serde = { version = "1.0.216", features = ["derive"] }
 serde_json = "1.0.133"
 tokio = { version = "1.42.0", features = ["full"] }
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
 
 [dev-dependencies]
 assert_cmd = "2.0.16"

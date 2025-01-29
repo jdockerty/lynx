@@ -11,6 +11,7 @@ use tokio::sync::{
     mpsc::{Receiver, Sender},
     Mutex,
 };
+use tracing::{debug, info};
 
 use crate::event::Event;
 
@@ -72,11 +73,17 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
         let events_for_namespace = actor
             .events
             .entry(event.namespace.clone())
-            .and_modify(|f| f.push(event.clone()))
-            .or_insert_with(|| vec![event.clone()]);
+            .and_modify(|f| {
+                debug!(namespace = event.namespace, "new event");
+                f.push(event.clone())
+            })
+            .or_insert_with(|| {
+                info!(namespace = event.namespace, "initialised with event");
+                vec![event.clone()]
+            });
 
         if events_for_namespace.len() == actor.max_events as usize {
-            eprintln!("Persisting events for {}", event.namespace);
+            info!(namespace = event.namespace, "persisting events");
             let mut names = StringBuilder::new();
             let mut values = UInt64Builder::new();
             // TODO: precision hints
@@ -109,7 +116,7 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
             let event_name = &event.name;
             let path =
                 object_store::path::Path::from(format!("lynx/{namespace}/{event_name}/{filename}"));
-            eprintln!("Persisting to {path}");
+            info!(namespace, table_name = event_name, %path, "persisting");
 
             let payload = PutPayload::from_bytes(v.into());
             actor.object_store.put(&path, payload).await.unwrap();
@@ -121,6 +128,7 @@ pub async fn run_persist_actor(mut actor: PersistActor) {
                 .entry(event.namespace.clone())
                 .or_insert_with(SessionContext::new);
             events_for_namespace.clear();
+            info!(namespace, "events reset");
         }
     }
 }
@@ -132,6 +140,7 @@ mod test {
 
     use tempfile::TempDir;
     use tokio::sync::Mutex;
+    use tracing::error;
 
     use crate::event::Event;
 
@@ -173,7 +182,7 @@ mod test {
             loop {
                 match tokio::fs::try_exists(&persist_path).await {
                     Ok(_) => break,
-                    Err(e) => eprintln!("{e}"),
+                    Err(e) => error!("{e}"),
                 }
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }

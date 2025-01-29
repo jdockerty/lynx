@@ -16,6 +16,7 @@ use axum::{
 use datafusion::prelude::SessionContext;
 use object_store::ObjectStore;
 use tokio::sync::Mutex;
+use tracing::{debug, error, info};
 
 pub const LYNX_FORMAT_HEADER: &str = "X-Lynx-Format";
 
@@ -140,12 +141,13 @@ pub async fn run(config: ServerRunConfig) -> Result<(), Box<dyn std::error::Erro
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("{host}:{port}")).await?;
-    eprintln!("Running {}", listener.local_addr().unwrap());
+    info!("Lynx started {}", listener.local_addr().unwrap());
 
     axum::serve(listener, app).await?;
     Ok(())
 }
 
+#[tracing::instrument(level = "debug")]
 async fn health() -> &'static str {
     "OK"
 }
@@ -159,6 +161,7 @@ enum IngestType {
     Batch(Vec<Event>),
 }
 
+#[tracing::instrument(level = "debug", skip(state))]
 async fn ingest(
     State(mut state): State<ServerState>,
     Json(ingest_type): Json<IngestType>,
@@ -178,6 +181,7 @@ async fn ingest(
     StatusCode::CREATED
 }
 
+#[tracing::instrument(level = "debug", skip(state))]
 async fn query(
     headers: HeaderMap,
     State(state): State<ServerState>,
@@ -186,19 +190,22 @@ async fn query(
     let table_name = match parse_table_name_hack(&payload.sql) {
         Ok(table_name) => table_name,
         Err(e) => {
-            eprintln!("query error: {e}");
+            error!("query error: {e}");
             return (
                 StatusCode::BAD_REQUEST,
                 "An unsupported query was provided".to_string(),
             );
         }
     };
+    info!(namespace = payload.namespace, table_name);
+
     let namespace_path = &format!(
         "{}/{}/{}",
         state.persist_path.to_string_lossy(),
         &payload.namespace,
         table_name,
     );
+    debug!(namespace_path);
     if let Some(record_batches) = handle_sql(
         state.files,
         &payload.namespace,
@@ -214,6 +221,8 @@ async fn query(
             Some(v) => v.to_str().unwrap().into(),
             None => QueryFormat::Json,
         };
+
+        debug!(format = format.as_str(), "Response format set");
 
         match format {
             QueryFormat::Pretty => {
@@ -232,6 +241,7 @@ async fn query(
             }
         }
     } else {
+        info!(namespace = payload.namespace, "No persisted files");
         (
             StatusCode::NOT_FOUND,
             format!("No persisted files within {}", payload.namespace),
