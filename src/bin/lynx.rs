@@ -9,6 +9,7 @@ use lynx::{
 };
 use object_store::ObjectStore;
 use reqwest::{header::CONTENT_TYPE, StatusCode};
+use tracing::{info, level_filters::LevelFilter, warn};
 
 #[derive(Debug, Clone, Parser)]
 struct Cli {
@@ -124,6 +125,10 @@ enum Commands {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
+    tracing_subscriber::fmt::fmt()
+        .with_max_level(LevelFilter::DEBUG)
+        .init();
+
     match cli.commands {
         Commands::Server {
             host,
@@ -155,9 +160,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Persistence::Local => persist_path.join("lynx"),
                 Persistence::S3 => format!("{}/lynx", aws.bucket.unwrap()).into(),
             };
-            eprintln!("Persist mode: {}", persist_mode.as_str());
-            eprintln!("Persist path: {}", persist_path.display());
-            eprintln!("WAL path: {}", wal_dir.display());
+
+            info!(persist_path = %persist_path.display());
+            info!(persist_mode = persist_mode.as_str());
+            info!(wal_path = %wal_dir.display());
+            info!(events_before_persist);
 
             let config = ServerRunConfig::new(
                 &host,
@@ -172,10 +179,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             tokio::select! {
                 _ = server::run(config) => {
-                    eprintln!("Server process exited");
+                    warn!("Server process exited");
                 },
                 _ = tokio::signal::ctrl_c() => {
-                    eprintln!("Shutting down server");
+                    warn!("Shutting down server");
                 }
             };
         }

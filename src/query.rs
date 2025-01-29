@@ -10,6 +10,7 @@ use datafusion::sql::sqlparser::ast::{SetExpr, TableFactor};
 use object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+use tracing::{debug, info};
 
 use crate::server::Persistence;
 
@@ -73,6 +74,7 @@ pub async fn handle_sql(
     match files.lock().await.get(namespace) {
         Some(ctx) => {
             if !ctx.table_exist(table_name).unwrap() {
+                info!(table_name, namespace, "Registering table");
                 match persist_mode {
                     Persistence::S3 => {
                         // TODO: better way to do this by explicitly passing the
@@ -83,13 +85,18 @@ pub async fn handle_sql(
                         let bucket = path.parent().unwrap().parent().unwrap();
                         let bucket_path =
                             format!("s3://{}/lynx/{namespace}/{table_name}", bucket.display());
+                        let table_path = format!("{bucket_path}{namespace}/{table_name}/");
+                        info!(
+                            bucket_path,
+                            table_path, table_name, namespace, "Registering object store"
+                        );
                         ctx.register_object_store(
                             &reqwest::Url::parse(&bucket_path).unwrap(),
                             Arc::clone(&object_store),
                         );
                         ctx.register_listing_table(
                             table_name,
-                            format!("{bucket_path}{namespace}/{table_name}/"),
+                            table_path,
                             list_opts.clone(),
                             None,
                             None,
@@ -98,6 +105,7 @@ pub async fn handle_sql(
                         .unwrap();
                     }
                     Persistence::Local => {
+                        info!(table_name, namespace_path, "Registering local table");
                         ctx.register_listing_table(
                             table_name,
                             namespace_path,
@@ -110,11 +118,15 @@ pub async fn handle_sql(
                     }
                 }
             }
+            debug!(sql, "executing query");
             let df = ctx.sql(&sql).await.unwrap();
             let batches = df.collect().await.unwrap();
             Some(batches)
         }
-        None => None,
+        None => {
+            info!(namespace, "attempted to query with no persisted files");
+            None
+        }
     }
 }
 
