@@ -7,6 +7,7 @@ edition = "2021"
 arrow = "53.3.0"
 arrow-json = "53.3.0"
 axum = { version = "0.7.9", features = ["macros"] }
+byteorder = "1.5.0"
 chrono = "0.4.39"
 clap = { version = "4.5.26", features = ["derive", "env"] }
 datafusion = "43.0.0"

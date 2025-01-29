@@ -18,13 +18,16 @@ struct Cli {
 
 #[derive(Debug, Clone, Parser)]
 struct AwsOptions {
-    /// Region that the bucket resides in.
     #[arg(
-        long = "aws-region",
+        long = "aws-access-key-id",
         required_if_eq("persist_mode", "s3"),
-        env = "AWS_REGION"
+        env = "AWS_ACCESS_KEY_ID"
     )]
-    region: Option<String>,
+    access_key_id: Option<String>,
+
+    /// Allow insecure (non-HTTPS) connections to the bucket.
+    #[arg(long = "aws-allow-http", env = "AWS_ALLOW_HTTP")]
+    allow_http: Option<bool>,
 
     /// Name of the bucket.
     #[arg(
@@ -38,12 +41,13 @@ struct AwsOptions {
     #[arg(long = "aws-endpoint", env = "AWS_ENDPOINT")]
     endpoint: Option<String>,
 
+    /// Region that the bucket resides in.
     #[arg(
-        long = "aws-access-key-id",
+        long = "aws-region",
         required_if_eq("persist_mode", "s3"),
-        env = "AWS_ACCESS_KEY_ID"
+        env = "AWS_REGION"
     )]
-    access_key_id: Option<String>,
+    region: Option<String>,
 
     #[arg(
         long = "aws-secret-access-key",
@@ -51,29 +55,21 @@ struct AwsOptions {
         env = "AWS_SECRET_ACCESS_KEY"
     )]
     secret_access_key: Option<String>,
-
-    /// Allow insecure (non-HTTPS) connections to the bucket.
-    #[arg(long = "aws-allow-http", env = "AWS_ALLOW_HTTP")]
-    allow_http: Option<bool>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
 enum Commands {
     /// Run the lynx server
     Server {
-        #[arg(long, env = "LYNX_HOST", default_value = "127.0.0.1")]
-        host: String,
-
-        #[arg(long, env = "LYNX_PORT", default_value = "3000")]
-        port: u16,
+        #[clap(flatten)]
+        aws: AwsOptions,
 
         /// Number of events before a persist event occurs per namespace.
         #[arg(long, env = "LYNX_PERSIST_EVENTS", default_value = "2")]
         events_before_persist: i64,
 
-        /// Path where lynx will persist parquet files.
-        #[arg(long, env = "LYNX_PERSIST_PATH", default_value = "/tmp")]
-        persist_path: PathBuf,
+        #[arg(long, env = "LYNX_HOST", default_value = "127.0.0.1")]
+        host: String,
 
         /// Dictate where parquet files will be persisted.
         ///
@@ -81,8 +77,19 @@ enum Commands {
         #[arg(long, env = "LYNX_PERSIST_MODE", default_value = "local")]
         persist_mode: Persistence,
 
-        #[clap(flatten)]
-        aws: AwsOptions,
+        /// Path where lynx will persist parquet files.
+        #[arg(long, env = "LYNX_PERSIST_PATH", default_value = "/tmp")]
+        persist_path: PathBuf,
+
+        /// Path where lynx will persist parquet files.
+        #[arg(long, env = "LYNX_WAL_DIR", default_value = "./")]
+        wal_dir: PathBuf,
+
+        #[arg(long, env = "LYNX_WAL_BUFFER_SIZE", default_value = "8096")]
+        wal_buffer_size: usize,
+
+        #[arg(long, env = "LYNX_PORT", default_value = "3000")]
+        port: u16,
     },
     /// Write data to lynx
     Write {
@@ -123,6 +130,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             port,
             events_before_persist,
             persist_path,
+            wal_dir,
+            wal_buffer_size,
             persist_mode,
             aws,
         } => {
@@ -148,16 +157,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             eprintln!("Persist mode: {}", persist_mode.as_str());
             eprintln!("Persist path: {}", persist_path.display());
+            eprintln!("WAL path: {}", wal_dir.display());
 
             let config = ServerRunConfig::new(
                 &host,
                 port,
                 events_before_persist,
                 persist_path,
+                wal_dir,
+                wal_buffer_size,
                 Arc::new(object_store),
                 persist_mode,
             );
-            server::run(config).await?;
+
+            tokio::select! {
+                _ = server::run(config) => {
+                    eprintln!("Server process exited");
+                },
+                _ = tokio::signal::ctrl_c() => {
+                    eprintln!("Shutting down server");
+                }
+            };
         }
         Commands::Write { host, port, file } => {
             let json = std::fs::read(&file).unwrap();
