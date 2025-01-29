@@ -79,13 +79,9 @@ impl Wal {
             .unwrap();
 
         let mut events = Vec::new();
-        loop {
-            match self.read() {
-                Ok(event) => events.push(event),
-                Err(_e) => break,
-            }
+        while let Ok(event) = self.read() {
+            events.push(event);
         }
-
         Ok(events)
     }
 }
