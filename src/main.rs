@@ -1,3 +1,5 @@
+mod wal;
+
 use axum::{
     Router,
     extract::State,
