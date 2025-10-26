@@ -4,7 +4,7 @@ use axum::{
     Router,
     extract::State,
     http::StatusCode,
-    response::Json,
+    response::{IntoResponse, Json},
     routing::{get, post},
 };
 use clap::Parser;
@@ -37,14 +37,16 @@ struct AppState {
 
 #[derive(Deserialize)]
 struct WriteRequest {
-    // TODO
-    data: serde_json::Value,
+    namespace: String,
+    value: String,
+    tags: Vec<(String, TagValue)>,
+    timestamp: u64,
 }
 
-#[derive(Serialize)]
-struct WriteResponse {
-    success: bool,
-    message: String,
+#[derive(Deserialize)]
+enum TagValue {
+    String,
+    Int,
 }
 
 #[derive(Deserialize)]
@@ -64,14 +66,11 @@ async fn health() -> StatusCode {
 }
 
 async fn write_handler(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<WriteRequest>,
-) -> Result<Json<WriteResponse>, StatusCode> {
+) -> impl IntoResponse {
     // TODO
-    Ok(Json(WriteResponse {
-        success: true,
-        message: format!("Write request received: {:?}", payload.data),
-    }))
+    StatusCode::OK
 }
 
 async fn query_handler(
