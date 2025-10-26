@@ -2,11 +2,138 @@
 
 use std::{
     fs::File,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
+use serde::{Deserialize, Serialize};
+
 const WAL_HEADER: &str = "LYNX1";
+
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct WriteRequest {
+    namespace: String,
+    value: String,
+    tags: Vec<(String, TagValue)>,
+    timestamp: u64,
+}
+
+impl WriteRequest {
+    fn to_bytes(self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(1024);
+
+        let namespace_data = self.namespace.as_bytes();
+        let namespace_len = namespace_data.len().to_be_bytes();
+        data.write_all(&namespace_len).unwrap();
+        data.write_all(&namespace_data).unwrap();
+
+        let value_data = self.value.as_bytes();
+        let value_len = value_data.len().to_be_bytes();
+        data.write_all(&value_len).unwrap();
+        data.write_all(&value_data).unwrap();
+
+        let tag_count = self.tags.len().to_be_bytes();
+        data.write_all(&tag_count).unwrap();
+
+        for (key, value) in &self.tags {
+            let value_type = match value {
+                TagValue::String(_) => 0_u8,
+                TagValue::Number(_) => 1_u8,
+            };
+            data.write_all(&[value_type]).unwrap();
+
+            let key_data = key.as_bytes();
+            let key_size = key_data.len().to_be_bytes();
+            data.write_all(&key_size).unwrap();
+            data.write_all(&key_data).unwrap();
+
+            match value {
+                TagValue::String(s) => {
+                    let value_data = s.as_bytes();
+                    let value_size = value_data.len().to_be_bytes();
+                    data.write_all(&value_size).unwrap();
+                    data.write_all(&value_data).unwrap();
+                }
+                TagValue::Number(n) => {
+                    data.write_all(&n.to_be_bytes()).unwrap();
+                }
+            }
+        }
+
+        data.write_all(&self.timestamp.to_be_bytes()).unwrap();
+
+        data
+    }
+
+    fn from_reader(r: &mut impl Read) -> Self {
+        let mut namespace_len = [0u8; 8];
+        r.read_exact(&mut namespace_len).unwrap();
+        let namespace_len = usize::from_be_bytes(namespace_len);
+        let mut namespace_data = vec![0u8; namespace_len];
+        r.read_exact(&mut namespace_data).unwrap();
+        let namespace = String::from_utf8(namespace_data).unwrap();
+
+        let mut value_len = [0u8; 8];
+        r.read_exact(&mut value_len).unwrap();
+        let value_len = usize::from_be_bytes(value_len);
+        let mut value_data = vec![0u8; value_len];
+        r.read_exact(&mut value_data).unwrap();
+        let value = String::from_utf8(value_data).unwrap();
+
+        let mut tag_count = [0u8; 8];
+        r.read_exact(&mut tag_count).unwrap();
+        let tag_count = usize::from_be_bytes(tag_count);
+
+        let mut tags = Vec::with_capacity(tag_count);
+        for _ in 0..tag_count {
+            let mut value_type = [0u8; 1];
+            r.read_exact(&mut value_type).unwrap();
+
+            let mut key_size = [0u8; 8];
+            r.read_exact(&mut key_size).unwrap();
+            let key_size = usize::from_be_bytes(key_size);
+            let mut key_data = vec![0u8; key_size];
+            r.read_exact(&mut key_data).unwrap();
+            let key = String::from_utf8(key_data).unwrap();
+
+            let tag_value = match value_type[0] {
+                0 => {
+                    let mut value_size = [0u8; 8];
+                    r.read_exact(&mut value_size).unwrap();
+                    let value_size = usize::from_be_bytes(value_size);
+                    let mut value_data = vec![0u8; value_size];
+                    r.read_exact(&mut value_data).unwrap();
+                    TagValue::String(String::from_utf8(value_data).unwrap())
+                }
+                1 => {
+                    let mut num = [0u8; 8];
+                    r.read_exact(&mut num).unwrap();
+                    TagValue::Number(u64::from_be_bytes(num))
+                }
+                _ => panic!("Invalid tag value type"),
+            };
+
+            tags.push((key, tag_value));
+        }
+
+        let mut timestamp = [0u8; 8];
+        r.read_exact(&mut timestamp).unwrap();
+        let timestamp = u64::from_be_bytes(timestamp);
+
+        WriteRequest {
+            namespace,
+            value,
+            tags,
+            timestamp,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+enum TagValue {
+    String(String),
+    Number(u64),
+}
 
 pub struct Wal {
     active_segment: Segment,
@@ -23,11 +150,12 @@ impl Wal {
         }
     }
 
-    pub fn write(&mut self, data: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn write(&mut self, data: WriteRequest) -> Result<(), Box<dyn std::error::Error>> {
         if self.active_segment.size > self.max_segment_size {
             self.rotate()?;
         }
-        self.active_segment.write(data)?;
+        let bytes = data.to_bytes();
+        self.active_segment.write(bytes)?;
         Ok(())
     }
 
@@ -80,7 +208,7 @@ impl Segment {
 mod test {
     use tempfile::TempDir;
 
-    use crate::wal::{Segment, WAL_HEADER, Wal};
+    use crate::wal::{Segment, WAL_HEADER, Wal, WriteRequest};
 
     #[test]
     fn segment_header() {
@@ -124,9 +252,15 @@ mod test {
         let mut wal = Wal::new(dir.path(), 10);
         assert_eq!(wal.active_segment.id(), 0);
 
-        wal.write(b"hello world".to_vec()).unwrap();
+        let write = WriteRequest {
+            namespace: "hello".to_string(),
+            value: "world".to_string(),
+            tags: vec![],
+            timestamp: 100,
+        };
+        wal.write(write.clone()).unwrap();
         assert_eq!(wal.active_segment.id(), 0, "ID is still expected to be 0");
-        wal.write(b"more data".to_vec()).unwrap();
+        wal.write(write).unwrap();
         assert_eq!(
             wal.active_segment.id(),
             1,

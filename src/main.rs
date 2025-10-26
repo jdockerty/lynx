@@ -9,10 +9,13 @@ use axum::{
 };
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{
+    io::{Read, Write},
+    sync::Arc,
+};
 use std::{net::SocketAddr, path::PathBuf};
 
-use crate::wal::Wal;
+use crate::wal::{Wal, WriteRequest};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -33,20 +36,6 @@ struct Args {
 
 struct AppState {
     wal: Wal,
-}
-
-#[derive(Deserialize)]
-struct WriteRequest {
-    namespace: String,
-    value: String,
-    tags: Vec<(String, TagValue)>,
-    timestamp: u64,
-}
-
-#[derive(Deserialize)]
-enum TagValue {
-    String,
-    Int,
 }
 
 #[derive(Deserialize)]
