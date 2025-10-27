@@ -9,10 +9,7 @@ use axum::{
 };
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use std::{
-    io::{Read, Write},
-    sync::Arc,
-};
+use std::sync::{Arc, Mutex};
 use std::{net::SocketAddr, path::PathBuf};
 
 use crate::wal::{Wal, WriteRequest};
@@ -35,7 +32,7 @@ struct Args {
 }
 
 struct AppState {
-    wal: Wal,
+    wal: Mutex<Wal>,
 }
 
 #[derive(Deserialize)]
@@ -58,7 +55,12 @@ async fn write_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<WriteRequest>,
 ) -> impl IntoResponse {
-    // TODO
+    match state.wal.lock().unwrap().write(payload) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("unable to write to wal: {e:?}");
+        }
+    }
     StatusCode::OK
 }
 
@@ -80,7 +82,7 @@ async fn main() {
     let args = Args::parse();
 
     let state = Arc::new(AppState {
-        wal: Wal::new(&args.wal_directory, args.wal_max_segment_size),
+        wal: Mutex::new(Wal::new(&args.wal_directory, args.wal_max_segment_size)),
     });
 
     let app = Router::new()
