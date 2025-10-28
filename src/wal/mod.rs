@@ -12,10 +12,10 @@ const WAL_HEADER: &str = "LYNX1";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct WriteRequest {
-    namespace: String,
-    value: String,
-    tags: Vec<(String, TagValue)>,
-    timestamp: u64,
+    pub namespace: String,
+    pub value: String,
+    pub tags: Vec<(String, TagValue)>,
+    pub timestamp: u64,
 }
 
 impl WriteRequest {
@@ -130,7 +130,7 @@ impl WriteRequest {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-enum TagValue {
+pub enum TagValue {
     String(String),
     Number(u64),
 }
