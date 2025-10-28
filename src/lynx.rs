@@ -18,6 +18,17 @@ pub struct Measurements {
     pub values: Vec<String>,
 }
 
+#[derive(Ord, Eq, PartialEq, PartialOrd)]
+struct PartitionKey(String);
+
+impl PartitionKey {
+    pub fn new(timestamp: u64) -> Self {
+        let utc_datetime = chrono::DateTime::from_timestamp_micros(timestamp as i64)
+            .expect("timestamps are currently assumed to be microseconds");
+        Self(utc_datetime.format(DAILY_PARTITION).to_string())
+    }
+}
+
 /// Lynx, an in-memory time-series database with durable writes.
 pub struct Lynx {
     /// Write-ahead log to provide durable writes for incoming data.
@@ -26,7 +37,7 @@ pub struct Lynx {
     /// in-memory buffer.
     wal: Mutex<Wal>,
     /// In-memory structure which makes the durable writes queryable.
-    buffer: Arc<Mutex<BTreeMap<String, BTreeMap<String, Measurements>>>>,
+    buffer: Arc<Mutex<BTreeMap<String, BTreeMap<PartitionKey, Measurements>>>>,
 }
 
 impl Lynx {
@@ -36,12 +47,6 @@ impl Lynx {
             wal: Mutex::new(Wal::new(wal_directory, max_segment_size)),
             buffer: Arc::new(Mutex::new(BTreeMap::new())),
         }
-    }
-
-    fn parse_partition_key(timestamp: i64) -> String {
-        let utc_datetime = chrono::DateTime::from_timestamp_micros(timestamp)
-            .expect("timestamps are currently assumed to be microseconds");
-        utc_datetime.format(DAILY_PARTITION).to_string()
     }
 
     /// Write a new request into the database.
@@ -54,9 +59,8 @@ impl Lynx {
         let mut buffer_guard = self.buffer.lock().unwrap();
         match buffer_guard.entry(payload.namespace) {
             Entry::Vacant(vacant) => {
-                let partition_key = Self::parse_partition_key(payload.timestamp as i64);
                 vacant.insert(BTreeMap::from_iter([(
-                    partition_key,
+                    PartitionKey::new(payload.timestamp),
                     Measurements {
                         timestamps: vec![payload.timestamp],
                         tags: payload.tags,
@@ -67,8 +71,7 @@ impl Lynx {
             Entry::Occupied(mut buffer_entry) => {
                 let partitions = buffer_entry.get_mut();
 
-                let partition_key = Self::parse_partition_key(payload.timestamp as i64);
-                match partitions.entry(partition_key) {
+                match partitions.entry(PartitionKey::new(payload.timestamp)) {
                     Entry::Vacant(init) => {
                         init.insert(Measurements {
                             timestamps: vec![payload.timestamp],
@@ -114,12 +117,17 @@ mod tests {
             timestamp: 1_700_000_001_000_000, // Same day
         };
 
-        lynx.write(request1).unwrap();
+        lynx.write(request1.clone()).unwrap();
         lynx.write(request2).unwrap();
 
         let buffer = lynx.buffer.lock().unwrap();
         let partitions = buffer.get("metrics").unwrap();
-        let measurements = partitions.get("2023-11-14").unwrap();
+
+        // The above requests are part of the same partition, as
+        // they use the same timestamp. So it does not matter which
+        // one we use.
+        let partition_key = PartitionKey::new(request1.timestamp);
+        let measurements = partitions.get(&partition_key).unwrap();
 
         assert_eq!(measurements.timestamps.len(), 2);
         assert_eq!(measurements.values, vec!["100", "200"]);
@@ -173,17 +181,26 @@ mod tests {
             timestamp: 1_700_086_400_000_000, // 2023-11-15
         };
 
-        lynx.write(request1).unwrap();
-        lynx.write(request2).unwrap();
+        lynx.write(request1.clone()).unwrap();
+        lynx.write(request2.clone()).unwrap();
 
         let buffer = lynx.buffer.lock().unwrap();
         let partitions = buffer.get("events").unwrap();
 
         assert_eq!(partitions.len(), 2);
-        assert!(partitions.contains_key("2023-11-14"));
-        assert!(partitions.contains_key("2023-11-15"));
 
-        assert_eq!(partitions.get("2023-11-14").unwrap().values, vec!["event1"]);
-        assert_eq!(partitions.get("2023-11-15").unwrap().values, vec!["event2"]);
+        let partition_key_req1 = PartitionKey::new(request1.timestamp);
+        let partition_key_req2 = PartitionKey::new(request2.timestamp);
+        assert!(partitions.contains_key(&partition_key_req1));
+        assert!(partitions.contains_key(&partition_key_req2));
+
+        assert_eq!(
+            partitions.get(&partition_key_req1).unwrap().values,
+            vec!["event1"]
+        );
+        assert_eq!(
+            partitions.get(&partition_key_req2).unwrap().values,
+            vec!["event2"]
+        );
     }
 }
