@@ -18,6 +18,11 @@ use wal::TagValue;
 
 use crate::wal::{Wal, WriteRequest};
 
+/// Time format string for daily partition keys.
+///
+/// This means that data is partitioned by day at all times currently.
+const DAILY_PARTITION: &str = "%Y-%m-%d";
+
 #[derive(Parser, Debug)]
 struct Args {
     #[arg(short, long, env = "LYNX_HTTP_ADDR", default_value = "127.0.0.1:3000")]
@@ -37,10 +42,10 @@ struct Args {
 
 struct AppState {
     wal: Mutex<Wal>,
-    buffer: Arc<Mutex<BTreeMap<String, Measurements>>>,
+    buffer: Arc<Mutex<BTreeMap<String, BTreeMap<String, Measurements>>>>,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct Measurements {
     timestamps: Vec<u64>,
     tags: Vec<(String, TagValue)>,
@@ -77,13 +82,40 @@ async fn write_handler(
     let mut buffer_guard = state.buffer.lock().unwrap();
     match buffer_guard.entry(payload.namespace) {
         Entry::Vacant(vacant) => {
-            vacant.insert(Measurements::default());
+            let inbound_time = chrono::DateTime::from_timestamp_micros(payload.timestamp as i64)
+                .expect("timestamps are currently assumed to be microseconds");
+
+            let partition_key = inbound_time.format(DAILY_PARTITION);
+            vacant.insert(BTreeMap::from_iter([(
+                partition_key.to_string(),
+                Measurements {
+                    timestamps: vec![payload.timestamp],
+                    tags: payload.tags,
+                    values: vec![payload.value],
+                },
+            )]));
         }
         Entry::Occupied(mut buffer_entry) => {
-            let buffered_measurements = buffer_entry.get_mut();
-            buffered_measurements.timestamps.push(payload.timestamp);
-            buffered_measurements.tags.extend(payload.tags);
-            buffered_measurements.values.push(payload.value);
+            let partitions = buffer_entry.get_mut();
+
+            let inbound_time = chrono::DateTime::from_timestamp_micros(payload.timestamp as i64)
+                .expect("timestamps are currently assumed to be microseconds");
+            let partition_key = inbound_time.format(DAILY_PARTITION);
+            match partitions.entry(partition_key.to_string()) {
+                Entry::Vacant(init) => {
+                    init.insert(Measurements {
+                        timestamps: vec![payload.timestamp],
+                        tags: payload.tags,
+                        values: vec![payload.value],
+                    });
+                }
+                Entry::Occupied(mut buffered_measurements) => {
+                    let buffered_measurements = buffered_measurements.get_mut();
+                    buffered_measurements.timestamps.push(payload.timestamp);
+                    buffered_measurements.tags.extend(payload.tags);
+                    buffered_measurements.values.push(payload.value);
+                }
+            };
         }
     };
     StatusCode::OK

@@ -129,7 +129,7 @@ impl WriteRequest {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TagValue {
     String(String),
     Number(u64),
