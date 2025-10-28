@@ -36,7 +36,12 @@ struct Args {
 }
 
 struct AppState {
+    /// Write-ahead log to provide durable writes for incoming data.
+    ///
+    /// Data MUST be appended to the WAL before making its way into the
+    /// in-memory buffer.
     wal: Mutex<Wal>,
+    /// In-memory structure which makes the durable writes queryable.
     buffer: Arc<Mutex<BTreeMap<String, BTreeMap<String, Measurements>>>>,
 }
 
