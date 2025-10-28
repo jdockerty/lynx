@@ -10,10 +10,7 @@ use axum::{
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{
-        BTreeMap,
-        btree_map::{self, Entry},
-    },
+    collections::{BTreeMap, btree_map::Entry},
     sync::{Arc, Mutex},
 };
 use std::{net::SocketAddr, path::PathBuf};
@@ -79,14 +76,14 @@ async fn write_handler(
     }
     let mut buffer_guard = state.buffer.lock().unwrap();
     match buffer_guard.entry(payload.namespace) {
-        Entry::Vacant(vacant_entry) => {
-            vacant_entry.insert(Measurements::default());
+        Entry::Vacant(vacant) => {
+            vacant.insert(Measurements::default());
         }
-        Entry::Occupied(mut occupied_entry) => {
-            let m = occupied_entry.get_mut();
-            m.timestamps.push(payload.timestamp);
-            m.tags.extend(payload.tags);
-            m.values.push(payload.value);
+        Entry::Occupied(mut buffer_entry) => {
+            let buffered_measurements = buffer_entry.get_mut();
+            buffered_measurements.timestamps.push(payload.timestamp);
+            buffered_measurements.tags.extend(payload.tags);
+            buffered_measurements.values.push(payload.value);
         }
     };
     StatusCode::OK
