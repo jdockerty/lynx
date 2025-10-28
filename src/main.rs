@@ -25,18 +25,13 @@ const DAILY_PARTITION: &str = "%Y-%m-%d";
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(short, long, env = "LYNX_HTTP_ADDR", default_value = "127.0.0.1:3000")]
+    #[arg(long, env = "LYNX_HTTP_ADDR", default_value = "127.0.0.1:3000")]
     bind: SocketAddr,
 
-    #[arg(short, long, env = "LYNX_WAL_DIRECTORY")]
+    #[arg(long, env = "LYNX_WAL_DIRECTORY")]
     wal_directory: PathBuf,
 
-    #[arg(
-        short,
-        long,
-        env = "LYNX_WAL_MAX_SEGMENT_SIZE",
-        default_value = "52428800"
-    )]
+    #[arg(long, env = "LYNX_WAL_MAX_SEGMENT_SIZE", default_value = "52428800")]
     wal_max_segment_size: u64,
 }
 
