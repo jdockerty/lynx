@@ -33,7 +33,8 @@ struct AppState {
 
 #[derive(Deserialize)]
 struct QueryRequest {
-    // TODO
+    namespace: String,
+    table: String,
     query: String,
 }
 
@@ -61,16 +62,16 @@ async fn write_handler(
 }
 
 async fn query_handler(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<QueryRequest>,
-) -> Result<Json<QueryResponse>, StatusCode> {
-    // TODO
-    Ok(Json(QueryResponse {
-        results: vec![serde_json::json!({
-            "query": payload.query,
-            "placeholder": "query results would go here"
-        })],
-    }))
+) -> impl IntoResponse {
+    let result = state
+        .lynx
+        .query(payload.namespace, payload.table, payload.query)
+        .await
+        .unwrap();
+    println!("{result:?}");
+    StatusCode::OK
 }
 
 #[tokio::main]

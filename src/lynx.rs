@@ -1,7 +1,16 @@
 use std::{
-    collections::{BTreeMap, btree_map::Entry},
+    collections::{BTreeMap, HashSet, btree_map::Entry},
     path::Path,
     sync::{Arc, Mutex},
+};
+
+use datafusion::{
+    arrow::{
+        array::{ArrayRef, RecordBatch, StringArray, TimestampMicrosecondArray},
+        datatypes::{DataType, Field, Schema, TimeUnit},
+    },
+    catalog::MemTable,
+    prelude::SessionContext,
 };
 
 use crate::wal::{TagValue, Wal, WriteRequest};
@@ -14,7 +23,7 @@ const DAILY_PARTITION: &str = "%Y-%m-%d";
 #[derive(Default, Debug, Clone)]
 pub struct Measurements {
     pub timestamps: Vec<i64>,
-    pub tags: Vec<(String, TagValue)>,
+    pub tags: Vec<Vec<(String, TagValue)>>,
     pub values: Vec<String>,
 }
 
@@ -42,7 +51,7 @@ pub struct Lynx {
     /// Data MUST be appended to the WAL before making its way into the
     /// in-memory buffer.
     wal: Mutex<Wal>,
-    /// In-memory structure which makes the durable writes queryable.
+    /// Hierarchical in-memory structure which makes the durable writes queryable.
     buffer: Arc<Mutex<BTreeMap<Namespace, BTreeMap<Table, BTreeMap<PartitionKey, Measurements>>>>>,
 
     query: Arc<SessionContext>,
@@ -54,6 +63,7 @@ impl Lynx {
         Self {
             wal: Mutex::new(Wal::new(wal_directory, max_segment_size)),
             buffer: Arc::new(Mutex::new(BTreeMap::new())),
+            query: Arc::new(SessionContext::new()),
         }
     }
 
@@ -65,39 +75,156 @@ impl Lynx {
         self.wal.lock().unwrap().write(payload.clone())?;
 
         let mut buffer_guard = self.buffer.lock().unwrap();
-        match buffer_guard.entry(payload.namespace) {
-            Entry::Vacant(vacant) => {
-                vacant.insert(BTreeMap::from_iter([(
-                    PartitionKey::new(payload.timestamp),
-                    Measurements {
-                        timestamps: vec![payload.timestamp],
-                        tags: payload.tags,
-                        values: vec![payload.value],
-                    },
-                )]));
-            }
-            Entry::Occupied(mut buffer_entry) => {
-                let partitions = buffer_entry.get_mut();
-
-                match partitions.entry(PartitionKey::new(payload.timestamp)) {
-                    Entry::Vacant(init) => {
-                        init.insert(Measurements {
+        match buffer_guard.entry(Namespace(payload.namespace)) {
+            Entry::Vacant(namespaces) => {
+                let mut tables = BTreeMap::new();
+                tables.insert(
+                    Table(payload.measurement),
+                    BTreeMap::from_iter([(
+                        PartitionKey::new(payload.timestamp),
+                        Measurements {
                             timestamps: vec![payload.timestamp],
-                            tags: payload.tags,
+                            tags: vec![payload.tags],
                             values: vec![payload.value],
-                        });
+                        },
+                    )]),
+                );
+                namespaces.insert(tables);
+            }
+            Entry::Occupied(mut namespace_entry) => {
+                let tables = namespace_entry.get_mut();
+
+                match tables.entry(Table(payload.measurement)) {
+                    Entry::Vacant(table) => {
+                        table.insert(BTreeMap::from_iter([(
+                            PartitionKey::new(payload.timestamp),
+                            Measurements {
+                                timestamps: vec![payload.timestamp],
+                                tags: vec![payload.tags],
+                                values: vec![payload.value],
+                            },
+                        )]));
                     }
-                    Entry::Occupied(mut buffered_measurements) => {
-                        let buffered_measurements = buffered_measurements.get_mut();
-                        buffered_measurements.timestamps.push(payload.timestamp);
-                        buffered_measurements.tags.extend(payload.tags);
-                        buffered_measurements.values.push(payload.value);
+                    Entry::Occupied(mut table_entry) => {
+                        let partitions = table_entry.get_mut();
+
+                        match partitions.entry(PartitionKey::new(payload.timestamp)) {
+                            Entry::Vacant(init) => {
+                                init.insert(Measurements {
+                                    timestamps: vec![payload.timestamp],
+                                    tags: vec![payload.tags],
+                                    values: vec![payload.value],
+                                });
+                            }
+                            Entry::Occupied(mut buffered_measurements) => {
+                                let buffered_measurements = buffered_measurements.get_mut();
+                                buffered_measurements.timestamps.push(payload.timestamp);
+                                buffered_measurements.tags.push(payload.tags);
+                                buffered_measurements.values.push(payload.value);
+                            }
+                        };
                     }
                 };
             }
         };
-
         Ok(())
+    }
+
+    pub async fn query(
+        &self,
+        namespace: String,
+        measurement: String,
+        sql: String,
+    ) -> Result<Option<Vec<RecordBatch>>, Box<dyn std::error::Error>> {
+        // Get a snapshot of the current in-memory data that
+        // will be queryable.
+        let tables = {
+            let buffer = self.buffer.lock().unwrap();
+            buffer.get(&Namespace(namespace.clone())).cloned()
+        };
+
+        match tables {
+            Some(tables) => {
+                let mut timestamps = Vec::new();
+                let mut values = Vec::new();
+                // Tags may not have been included within a write.
+                // When they are included, it needs to be matched with the
+                // write it was with.
+                let mut all_tags: Vec<Vec<(String, TagValue)>> = Vec::new();
+
+                if let Some(partitions) = tables.get(&Table(measurement.clone())) {
+                    for partition_values in partitions.values() {
+                        timestamps.extend_from_slice(&partition_values.timestamps);
+                        values.extend_from_slice(&partition_values.values);
+                        all_tags.extend_from_slice(&partition_values.tags);
+                    }
+
+                    let mut tag_keys = Vec::new();
+                    let mut tag_keys_set = HashSet::new();
+                    for row_tags in &all_tags {
+                        for (tag_key, _) in row_tags {
+                            //
+                            if tag_keys_set.insert(tag_key.clone()) {
+                                tag_keys.push(tag_key.clone());
+                            }
+                        }
+                    }
+                    tag_keys.sort();
+
+                    // Build schema
+                    let mut fields = vec![
+                        Field::new(
+                            "timestamp",
+                            DataType::Timestamp(TimeUnit::Microsecond, None),
+                            false,
+                        ),
+                        Field::new("value", DataType::Utf8, false),
+                    ];
+
+                    for key in &tag_keys {
+                        fields.push(Field::new(key.as_str(), DataType::Utf8, true));
+                    }
+
+                    let schema = Arc::new(Schema::new(fields));
+
+                    // Build columns
+                    let timestamp_array =
+                        Arc::new(TimestampMicrosecondArray::from_iter_values(timestamps))
+                            as ArrayRef;
+                    let value_array = Arc::new(StringArray::from_iter_values(values)) as ArrayRef;
+
+                    // Build one array per tag key
+                    let mut tag_columns: Vec<ArrayRef> = Vec::new();
+                    for tag_key in &tag_keys {
+                        let mut tag_column_values: Vec<Option<String>> = Vec::new();
+                        for row_tags in &all_tags {
+                            let tag_value = row_tags
+                                .iter()
+                                .find(|(k, _)| k == tag_key)
+                                .map(|(_, v)| v.to_string());
+                            tag_column_values.push(tag_value);
+                        }
+                        tag_columns
+                            .push(Arc::new(StringArray::from(tag_column_values)) as ArrayRef);
+                    }
+
+                    let mut columns = vec![timestamp_array, value_array];
+                    columns.extend(tag_columns);
+
+                    let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
+                    let memtable = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+
+                    // TODO: change to table
+                    self.query.register_table(measurement, memtable).unwrap();
+                    let df = self.query.sql(&sql).await.unwrap();
+                    let results = df.collect().await.unwrap();
+                    Ok(Some(results))
+                } else {
+                    Ok(None)
+                }
+            }
+            None => Ok(None),
+        }
     }
 }
 
