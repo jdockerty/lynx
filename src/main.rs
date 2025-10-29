@@ -1,3 +1,4 @@
+mod lynx;
 mod wal;
 
 use axum::{
@@ -9,33 +10,25 @@ use axum::{
 };
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use std::{
-    io::{Read, Write},
-    sync::Arc,
-};
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
-use crate::wal::{Wal, WriteRequest};
+use crate::{lynx::Lynx, wal::WriteRequest};
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(short, long, env = "LYNX_HTTP_ADDR", default_value = "127.0.0.1:3000")]
+    #[arg(long, env = "LYNX_HTTP_ADDR", default_value = "127.0.0.1:3000")]
     bind: SocketAddr,
 
-    #[arg(short, long, env = "LYNX_WAL_DIRECTORY")]
+    #[arg(long, env = "LYNX_WAL_DIRECTORY")]
     wal_directory: PathBuf,
 
-    #[arg(
-        short,
-        long,
-        env = "LYNX_WAL_MAX_SEGMENT_SIZE",
-        default_value = "52428800"
-    )]
+    #[arg(long, env = "LYNX_WAL_MAX_SEGMENT_SIZE", default_value = "52428800")]
     wal_max_segment_size: u64,
 }
 
 struct AppState {
-    wal: Wal,
+    /// An in-memory, durable, time-series database.
+    lynx: Lynx,
 }
 
 #[derive(Deserialize)]
@@ -58,8 +51,13 @@ async fn write_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<WriteRequest>,
 ) -> impl IntoResponse {
-    // TODO
-    StatusCode::OK
+    match state.lynx.write(payload) {
+        Ok(_) => StatusCode::OK,
+        Err(e) => {
+            eprintln!("{e:?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
 }
 
 async fn query_handler(
@@ -80,7 +78,7 @@ async fn main() {
     let args = Args::parse();
 
     let state = Arc::new(AppState {
-        wal: Wal::new(&args.wal_directory, args.wal_max_segment_size),
+        lynx: Lynx::new(&args.wal_directory, args.wal_max_segment_size),
     });
 
     let app = Router::new()
