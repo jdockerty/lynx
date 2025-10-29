@@ -13,9 +13,10 @@ const WAL_HEADER: &str = "LYNX1";
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct WriteRequest {
     pub namespace: String,
+    pub measurement: String,
     pub value: String,
     pub tags: Vec<(String, TagValue)>,
-    pub timestamp: u64,
+    pub timestamp: i64,
 }
 
 impl WriteRequest {
@@ -73,6 +74,13 @@ impl WriteRequest {
         r.read_exact(&mut namespace_data).unwrap();
         let namespace = String::from_utf8(namespace_data).unwrap();
 
+        let mut measurement_len = [0u8; 8];
+        r.read_exact(&mut measurement_len).unwrap();
+        let measurement_len = usize::from_be_bytes(measurement_len);
+        let mut measurement_data = vec![0u8; measurement_len];
+        r.read_exact(&mut measurement_data).unwrap();
+        let measurement = String::from_utf8(measurement_data).unwrap();
+
         let mut value_len = [0u8; 8];
         r.read_exact(&mut value_len).unwrap();
         let value_len = usize::from_be_bytes(value_len);
@@ -118,10 +126,11 @@ impl WriteRequest {
 
         let mut timestamp = [0u8; 8];
         r.read_exact(&mut timestamp).unwrap();
-        let timestamp = u64::from_be_bytes(timestamp);
+        let timestamp = i64::from_be_bytes(timestamp);
 
         WriteRequest {
             namespace,
+            measurement,
             value,
             tags,
             timestamp,
@@ -133,6 +142,15 @@ impl WriteRequest {
 pub enum TagValue {
     String(String),
     Number(u64),
+}
+
+impl ToString for TagValue {
+    fn to_string(&self) -> String {
+        match self {
+            TagValue::String(s) => s.clone(),
+            TagValue::Number(n) => n.to_string(),
+        }
+    }
 }
 
 pub struct Wal {
@@ -254,6 +272,7 @@ mod test {
 
         let write = WriteRequest {
             namespace: "hello".to_string(),
+            measurement: "test".to_string(),
             value: "world".to_string(),
             tags: vec![],
             timestamp: 100,

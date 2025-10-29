@@ -11,23 +11,29 @@ use crate::wal::{TagValue, Wal, WriteRequest};
 /// This means that data is partitioned by day at all times currently.
 const DAILY_PARTITION: &str = "%Y-%m-%d";
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Measurements {
-    pub timestamps: Vec<u64>,
+    pub timestamps: Vec<i64>,
     pub tags: Vec<(String, TagValue)>,
     pub values: Vec<String>,
 }
 
-#[derive(Ord, Eq, PartialEq, PartialOrd)]
+#[derive(Ord, Eq, PartialEq, PartialOrd, Clone)]
 struct PartitionKey(String);
 
 impl PartitionKey {
-    pub fn new(timestamp: u64) -> Self {
+    pub fn new(timestamp: i64) -> Self {
         let utc_datetime = chrono::DateTime::from_timestamp_micros(timestamp as i64)
             .expect("timestamps are currently assumed to be microseconds");
         Self(utc_datetime.format(DAILY_PARTITION).to_string())
     }
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Namespace(String);
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Table(String);
 
 /// Lynx, an in-memory time-series database with durable writes.
 pub struct Lynx {
@@ -37,7 +43,9 @@ pub struct Lynx {
     /// in-memory buffer.
     wal: Mutex<Wal>,
     /// In-memory structure which makes the durable writes queryable.
-    buffer: Arc<Mutex<BTreeMap<String, BTreeMap<PartitionKey, Measurements>>>>,
+    buffer: Arc<Mutex<BTreeMap<Namespace, BTreeMap<Table, BTreeMap<PartitionKey, Measurements>>>>>,
+
+    query: Arc<SessionContext>,
 }
 
 impl Lynx {
@@ -105,6 +113,7 @@ mod tests {
 
         let request1 = WriteRequest {
             namespace: "metrics".to_string(),
+            measurement: "cpu".to_string(),
             value: "100".to_string(),
             tags: vec![("host".to_string(), TagValue::String("server1".to_string()))],
             timestamp: 1_700_000_000_000_000, // 2023-11-14
@@ -112,6 +121,7 @@ mod tests {
 
         let request2 = WriteRequest {
             namespace: "metrics".to_string(),
+            measurement: "cpu".to_string(),
             value: "200".to_string(),
             tags: vec![("host".to_string(), TagValue::String("server2".to_string()))],
             timestamp: 1_700_000_001_000_000, // Same day
@@ -121,7 +131,8 @@ mod tests {
         lynx.write(request2).unwrap();
 
         let buffer = lynx.buffer.lock().unwrap();
-        let partitions = buffer.get("metrics").unwrap();
+        let tables = buffer.get(&Namespace("metrics".to_string())).unwrap();
+        let partitions = tables.get(&Table("cpu".to_string())).unwrap();
 
         // The above requests are part of the same partition, as
         // they use the same timestamp. So it does not matter which
@@ -141,6 +152,7 @@ mod tests {
 
         let request1 = WriteRequest {
             namespace: "cpu".to_string(),
+            measurement: "usage".to_string(),
             value: "80".to_string(),
             tags: vec![],
             timestamp: 1_700_000_000_000_000,
@@ -148,6 +160,7 @@ mod tests {
 
         let request2 = WriteRequest {
             namespace: "memory".to_string(),
+            measurement: "usage".to_string(),
             value: "4096".to_string(),
             tags: vec![],
             timestamp: 1_700_000_000_000_000,
@@ -158,8 +171,8 @@ mod tests {
 
         let buffer = lynx.buffer.lock().unwrap();
         assert_eq!(buffer.len(), 2);
-        assert!(buffer.contains_key("cpu"));
-        assert!(buffer.contains_key("memory"));
+        assert!(buffer.contains_key(&Namespace("cpu".to_string())));
+        assert!(buffer.contains_key(&Namespace("memory".to_string())));
     }
 
     #[test]
@@ -169,6 +182,7 @@ mod tests {
 
         let request1 = WriteRequest {
             namespace: "events".to_string(),
+            measurement: "clicks".to_string(),
             value: "event1".to_string(),
             tags: vec![],
             timestamp: 1_700_000_000_000_000, // 2023-11-14
@@ -176,6 +190,7 @@ mod tests {
 
         let request2 = WriteRequest {
             namespace: "events".to_string(),
+            measurement: "clicks".to_string(),
             value: "event2".to_string(),
             tags: vec![],
             timestamp: 1_700_086_400_000_000, // 2023-11-15
@@ -185,7 +200,8 @@ mod tests {
         lynx.write(request2.clone()).unwrap();
 
         let buffer = lynx.buffer.lock().unwrap();
-        let partitions = buffer.get("events").unwrap();
+        let tables = buffer.get(&Namespace("events".to_string())).unwrap();
+        let partitions = tables.get(&Table("clicks".to_string())).unwrap();
 
         assert_eq!(partitions.len(), 2);
 
