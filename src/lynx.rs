@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet, btree_map::Entry},
+    collections::{BTreeMap, HashMap, HashSet, btree_map::Entry},
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -23,11 +23,11 @@ const DAILY_PARTITION: &str = "%Y-%m-%d";
 #[derive(Default, Debug, Clone)]
 pub struct Measurements {
     pub timestamps: Vec<i64>,
-    pub tags: Vec<Vec<(String, TagValue)>>,
+    pub metadata: Vec<HashMap<String, TagValue>>,
     pub values: Vec<String>,
 }
 
-#[derive(Ord, Eq, PartialEq, PartialOrd, Clone)]
+#[derive(Debug, Ord, Eq, PartialEq, PartialOrd, Clone)]
 struct PartitionKey(String);
 
 impl PartitionKey {
@@ -84,7 +84,7 @@ impl Lynx {
                         PartitionKey::new(payload.timestamp),
                         Measurements {
                             timestamps: vec![payload.timestamp],
-                            tags: vec![payload.tags],
+                            metadata: vec![payload.metadata],
                             values: vec![payload.value],
                         },
                     )]),
@@ -100,7 +100,7 @@ impl Lynx {
                             PartitionKey::new(payload.timestamp),
                             Measurements {
                                 timestamps: vec![payload.timestamp],
-                                tags: vec![payload.tags],
+                                metadata: vec![payload.metadata],
                                 values: vec![payload.value],
                             },
                         )]));
@@ -112,14 +112,14 @@ impl Lynx {
                             Entry::Vacant(init) => {
                                 init.insert(Measurements {
                                     timestamps: vec![payload.timestamp],
-                                    tags: vec![payload.tags],
+                                    metadata: vec![payload.metadata],
                                     values: vec![payload.value],
                                 });
                             }
                             Entry::Occupied(mut buffered_measurements) => {
                                 let buffered_measurements = buffered_measurements.get_mut();
                                 buffered_measurements.timestamps.push(payload.timestamp);
-                                buffered_measurements.tags.push(payload.tags);
+                                buffered_measurements.metadata.push(payload.metadata);
                                 buffered_measurements.values.push(payload.value);
                             }
                         };
@@ -147,31 +147,23 @@ impl Lynx {
             Some(tables) => {
                 let mut timestamps = Vec::new();
                 let mut values = Vec::new();
-                // Tags may not have been included within a write.
-                // When they are included, it needs to be matched with the
-                // write it was with.
-                let mut all_tags: Vec<Vec<(String, TagValue)>> = Vec::new();
+                let mut all_metadata: Vec<HashMap<String, TagValue>> = Vec::new();
 
                 if let Some(partitions) = tables.get(&Table(measurement.clone())) {
                     for partition_values in partitions.values() {
                         timestamps.extend_from_slice(&partition_values.timestamps);
                         values.extend_from_slice(&partition_values.values);
-                        all_tags.extend_from_slice(&partition_values.tags);
+                        all_metadata.extend_from_slice(&partition_values.metadata);
                     }
 
-                    let mut tag_keys = Vec::new();
-                    let mut tag_keys_set = HashSet::new();
-                    for row_tags in &all_tags {
-                        for (tag_key, _) in row_tags {
-                            //
-                            if tag_keys_set.insert(tag_key.clone()) {
-                                tag_keys.push(tag_key.clone());
-                            }
+                    // Collect all unique tag keys
+                    let mut tag_keys = HashSet::new();
+                    for metadata in &all_metadata {
+                        for key in metadata.keys() {
+                            tag_keys.insert(key.clone());
                         }
                     }
-                    tag_keys.sort();
 
-                    // Build schema
                     let mut fields = vec![
                         Field::new(
                             "timestamp",
@@ -182,40 +174,35 @@ impl Lynx {
                     ];
 
                     for key in &tag_keys {
+                        // Tag values are nullable because not every tag may be present
+                        // for every write
                         fields.push(Field::new(key.as_str(), DataType::Utf8, true));
                     }
 
                     let schema = Arc::new(Schema::new(fields));
 
-                    // Build columns
                     let timestamp_array =
                         Arc::new(TimestampMicrosecondArray::from_iter_values(timestamps))
                             as ArrayRef;
                     let value_array = Arc::new(StringArray::from_iter_values(values)) as ArrayRef;
 
-                    // Build one array per tag key
-                    let mut tag_columns: Vec<ArrayRef> = Vec::new();
-                    for tag_key in &tag_keys {
-                        let mut tag_column_values: Vec<Option<String>> = Vec::new();
-                        for row_tags in &all_tags {
-                            let tag_value = row_tags
-                                .iter()
-                                .find(|(k, _)| k == tag_key)
-                                .map(|(_, v)| v.to_string());
-                            tag_column_values.push(tag_value);
-                        }
-                        tag_columns
-                            .push(Arc::new(StringArray::from(tag_column_values)) as ArrayRef);
-                    }
-
                     let mut columns = vec![timestamp_array, value_array];
-                    columns.extend(tag_columns);
+
+                    for tag_key in &tag_keys {
+                        let tag_values: Vec<Option<String>> = all_metadata
+                            .iter()
+                            .map(|metadata| metadata.get(tag_key).map(|v| v.to_string()))
+                            .collect();
+                        let tag_array = Arc::new(StringArray::from(tag_values)) as ArrayRef;
+                        columns.push(tag_array);
+                    }
 
                     let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
                     let memtable = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
 
-                    // TODO: change to table
-                    self.query.register_table(measurement, memtable).unwrap();
+                    if !self.query.table_exist(&measurement).unwrap() {
+                        self.query.register_table(measurement, memtable).unwrap();
+                    }
                     let df = self.query.sql(&sql).await.unwrap();
                     let results = df.collect().await.unwrap();
                     Ok(Some(results))
@@ -242,7 +229,10 @@ mod tests {
             namespace: "metrics".to_string(),
             measurement: "cpu".to_string(),
             value: "100".to_string(),
-            tags: vec![("host".to_string(), TagValue::String("server1".to_string()))],
+            metadata: HashMap::from_iter([(
+                "host".to_string(),
+                TagValue::String("server1".to_string()),
+            )]),
             timestamp: 1_700_000_000_000_000, // 2023-11-14
         };
 
@@ -250,7 +240,10 @@ mod tests {
             namespace: "metrics".to_string(),
             measurement: "cpu".to_string(),
             value: "200".to_string(),
-            tags: vec![("host".to_string(), TagValue::String("server2".to_string()))],
+            metadata: HashMap::from_iter([(
+                "host".to_string(),
+                TagValue::String("server2".to_string()),
+            )]),
             timestamp: 1_700_000_001_000_000, // Same day
         };
 
@@ -260,6 +253,7 @@ mod tests {
         let buffer = lynx.buffer.lock().unwrap();
         let tables = buffer.get(&Namespace("metrics".to_string())).unwrap();
         let partitions = tables.get(&Table("cpu".to_string())).unwrap();
+        assert_eq!(partitions.len(), 1);
 
         // The above requests are part of the same partition, as
         // they use the same timestamp. So it does not matter which
@@ -269,7 +263,7 @@ mod tests {
 
         assert_eq!(measurements.timestamps.len(), 2);
         assert_eq!(measurements.values, vec!["100", "200"]);
-        assert_eq!(measurements.tags.len(), 2);
+        assert_eq!(measurements.metadata.len(), 2);
     }
 
     #[test]
@@ -281,7 +275,7 @@ mod tests {
             namespace: "cpu".to_string(),
             measurement: "usage".to_string(),
             value: "80".to_string(),
-            tags: vec![],
+            metadata: HashMap::new(),
             timestamp: 1_700_000_000_000_000,
         };
 
@@ -289,7 +283,7 @@ mod tests {
             namespace: "memory".to_string(),
             measurement: "usage".to_string(),
             value: "4096".to_string(),
-            tags: vec![],
+            metadata: HashMap::new(),
             timestamp: 1_700_000_000_000_000,
         };
 
@@ -311,7 +305,7 @@ mod tests {
             namespace: "events".to_string(),
             measurement: "clicks".to_string(),
             value: "event1".to_string(),
-            tags: vec![],
+            metadata: HashMap::new(),
             timestamp: 1_700_000_000_000_000, // 2023-11-14
         };
 
@@ -319,7 +313,7 @@ mod tests {
             namespace: "events".to_string(),
             measurement: "clicks".to_string(),
             value: "event2".to_string(),
-            tags: vec![],
+            metadata: HashMap::new(),
             timestamp: 1_700_086_400_000_000, // 2023-11-15
         };
 
