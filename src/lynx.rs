@@ -32,7 +32,7 @@ struct PartitionKey(String);
 
 impl PartitionKey {
     pub fn new(timestamp: i64) -> Self {
-        let utc_datetime = chrono::DateTime::from_timestamp_micros(timestamp as i64)
+        let utc_datetime = chrono::DateTime::from_timestamp_micros(timestamp)
             .expect("timestamps are currently assumed to be microseconds");
         Self(utc_datetime.format(DAILY_PARTITION).to_string())
     }
