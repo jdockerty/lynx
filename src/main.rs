@@ -9,6 +9,7 @@ use axum::{
     routing::{get, post},
 };
 use clap::Parser;
+use datafusion::arrow::util::pretty::print_batches;
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
@@ -70,7 +71,7 @@ async fn query_handler(
         .query(payload.namespace, payload.table, payload.query)
         .await
         .unwrap();
-    println!("{result:?}");
+    result.map(|b| print_batches(&b));
     StatusCode::OK
 }
 
