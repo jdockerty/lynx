@@ -218,6 +218,7 @@ impl Lynx {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::assert_batches_eq;
     use tempfile::TempDir;
 
     #[test]
@@ -338,6 +339,85 @@ mod tests {
         assert_eq!(
             partitions.get(&partition_key_req2).unwrap().values,
             vec!["event2"]
+        );
+    }
+
+    #[tokio::test]
+    async fn query_results() {
+        let dir = TempDir::new().unwrap();
+        let lynx = Lynx::new(dir.path(), 1024 * 1024);
+
+        let request = WriteRequest {
+            namespace: "events".to_string(),
+            measurement: "clicks".to_string(),
+            value: "search_button".to_string(),
+            metadata: HashMap::new(),
+            timestamp: 1,
+        };
+
+        lynx.write(request.clone()).unwrap();
+
+        let result = lynx
+            .query(
+                request.namespace.clone(),
+                request.measurement.clone(),
+                "SELECT * FROM clicks".to_string(),
+            )
+            .await
+            .unwrap()
+            .expect("results returned");
+
+        let expected = vec![
+            "+----------------------------+---------------+",
+            "| timestamp                  | value         |",
+            "+----------------------------+---------------+",
+            "| 1970-01-01T00:00:00.000001 | search_button |",
+            "+----------------------------+---------------+",
+        ];
+
+        assert_eq!(result.len(), 1);
+        assert_batches_eq!(expected, &result);
+
+        let request = WriteRequest {
+            namespace: "events".to_string(),
+            measurement: "clicks".to_string(),
+            value: "search_button".to_string(),
+            metadata: HashMap::new(),
+            timestamp: 100, // updated timestamp
+        };
+
+        lynx.write(request.clone()).unwrap();
+        let result = lynx
+            .query(
+                request.namespace.clone(),
+                request.measurement.clone(),
+                "SELECT * FROM clicks".to_string(),
+            )
+            .await
+            .unwrap()
+            .expect("results returned");
+
+        let expected = vec![
+            "+----------------------------+---------------+",
+            "| timestamp                  | value         |",
+            "+----------------------------+---------------+",
+            "| 1970-01-01T00:00:00.000001 | search_button |",
+            "| 1970-01-01T00:00:00.000100 | search_button |",
+            "+----------------------------+---------------+",
+        ];
+        // Ensure that data written to the same measurement also shows up in results
+        assert_batches_eq!(expected, &result);
+
+        assert!(
+            lynx.query(
+                "not_exist".to_string(),
+                "not_exist".to_string(),
+                "SELECT * FROM not_exist".to_string()
+            )
+            .await
+            .unwrap()
+            .is_none(),
+            "Expected `None` when querying a non-existent namespace/measurement"
         );
     }
 }
