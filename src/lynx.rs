@@ -9,7 +9,6 @@ use datafusion::{
         array::{ArrayRef, RecordBatch, StringArray, TimestampMicrosecondArray},
         datatypes::{DataType, Field, Schema, TimeUnit},
     },
-    catalog::MemTable,
     prelude::SessionContext,
 };
 
@@ -198,11 +197,12 @@ impl Lynx {
                     }
 
                     let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
-                    let memtable = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
 
-                    if !self.query.table_exist(&measurement).unwrap() {
-                        self.query.register_table(measurement, memtable).unwrap();
-                    }
+                    // Deregister/register to show updated results from the new batch.
+                    let _ = self.query.deregister_table(&measurement);
+                    // TODO: is there a more elegant way to do this?
+                    self.query.register_batch(&measurement, batch).unwrap();
+
                     let df = self.query.sql(&sql).await.unwrap();
                     let results = df.collect().await.unwrap();
                     Ok(Some(results))
