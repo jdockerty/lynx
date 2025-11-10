@@ -1,6 +1,7 @@
 {
-  "namespace": "factory_temp",
+  "namespace": "factory",
+  "measurement": "temp",
   "value": "50",
-  "tags": [],
+  "metadata": {},
   "timestamp": 1761318000019000
 }

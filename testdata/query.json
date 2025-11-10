@@ -1,0 +1,5 @@
+{
+  "namespace": "factory",
+  "table": "temp",
+  "query": "SELECT * from temp"
+}

@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::{
+    collections::HashMap,
     fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -13,9 +14,11 @@ const WAL_HEADER: &str = "LYNX1";
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct WriteRequest {
     pub namespace: String,
+    pub measurement: String,
     pub value: String,
-    pub tags: Vec<(String, TagValue)>,
-    pub timestamp: u64,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, TagValue>,
+    pub timestamp: i64,
 }
 
 impl WriteRequest {
@@ -32,10 +35,10 @@ impl WriteRequest {
         data.write_all(&value_len).unwrap();
         data.write_all(&value_data).unwrap();
 
-        let tag_count = self.tags.len().to_be_bytes();
+        let tag_count = self.metadata.len().to_be_bytes();
         data.write_all(&tag_count).unwrap();
 
-        for (key, value) in &self.tags {
+        for (key, value) in &self.metadata {
             let value_type = match value {
                 TagValue::String(_) => 0_u8,
                 TagValue::Number(_) => 1_u8,
@@ -73,6 +76,13 @@ impl WriteRequest {
         r.read_exact(&mut namespace_data).unwrap();
         let namespace = String::from_utf8(namespace_data).unwrap();
 
+        let mut measurement_len = [0u8; 8];
+        r.read_exact(&mut measurement_len).unwrap();
+        let measurement_len = usize::from_be_bytes(measurement_len);
+        let mut measurement_data = vec![0u8; measurement_len];
+        r.read_exact(&mut measurement_data).unwrap();
+        let measurement = String::from_utf8(measurement_data).unwrap();
+
         let mut value_len = [0u8; 8];
         r.read_exact(&mut value_len).unwrap();
         let value_len = usize::from_be_bytes(value_len);
@@ -84,7 +94,7 @@ impl WriteRequest {
         r.read_exact(&mut tag_count).unwrap();
         let tag_count = usize::from_be_bytes(tag_count);
 
-        let mut tags = Vec::with_capacity(tag_count);
+        let mut metadata = HashMap::with_capacity(tag_count);
         for _ in 0..tag_count {
             let mut value_type = [0u8; 1];
             r.read_exact(&mut value_type).unwrap();
@@ -112,18 +122,18 @@ impl WriteRequest {
                 }
                 _ => panic!("Invalid tag value type"),
             };
-
-            tags.push((key, tag_value));
+            metadata.insert(key, tag_value);
         }
 
         let mut timestamp = [0u8; 8];
         r.read_exact(&mut timestamp).unwrap();
-        let timestamp = u64::from_be_bytes(timestamp);
+        let timestamp = i64::from_be_bytes(timestamp);
 
         WriteRequest {
             namespace,
+            measurement,
             value,
-            tags,
+            metadata,
             timestamp,
         }
     }
@@ -133,6 +143,15 @@ impl WriteRequest {
 pub enum TagValue {
     String(String),
     Number(u64),
+}
+
+impl ToString for TagValue {
+    fn to_string(&self) -> String {
+        match self {
+            TagValue::String(s) => s.clone(),
+            TagValue::Number(n) => n.to_string(),
+        }
+    }
 }
 
 pub struct Wal {
@@ -206,6 +225,8 @@ impl Segment {
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
+
     use tempfile::TempDir;
 
     use crate::wal::{Segment, WAL_HEADER, Wal, WriteRequest};
@@ -254,8 +275,9 @@ mod test {
 
         let write = WriteRequest {
             namespace: "hello".to_string(),
+            measurement: "test".to_string(),
             value: "world".to_string(),
-            tags: vec![],
+            metadata: HashMap::new(),
             timestamp: 100,
         };
         wal.write(write.clone()).unwrap();

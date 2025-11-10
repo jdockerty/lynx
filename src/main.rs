@@ -9,6 +9,7 @@ use axum::{
     routing::{get, post},
 };
 use clap::Parser;
+use datafusion::arrow::util::pretty::print_batches;
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
@@ -33,7 +34,8 @@ struct AppState {
 
 #[derive(Deserialize)]
 struct QueryRequest {
-    // TODO
+    namespace: String,
+    table: String,
     query: String,
 }
 
@@ -61,16 +63,16 @@ async fn write_handler(
 }
 
 async fn query_handler(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<QueryRequest>,
-) -> Result<Json<QueryResponse>, StatusCode> {
-    // TODO
-    Ok(Json(QueryResponse {
-        results: vec![serde_json::json!({
-            "query": payload.query,
-            "placeholder": "query results would go here"
-        })],
-    }))
+) -> impl IntoResponse {
+    let result = state
+        .lynx
+        .query(payload.namespace, payload.table, payload.query)
+        .await
+        .unwrap();
+    result.map(|b| print_batches(&b));
+    StatusCode::OK
 }
 
 #[tokio::main]
