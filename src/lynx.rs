@@ -10,6 +10,7 @@ use datafusion::{
         datatypes::{DataType, Field, Schema, TimeUnit},
     },
     prelude::SessionContext,
+    sql::sqlparser::{dialect::GenericDialect, parser::Parser},
 };
 
 use crate::wal::{TagValue, Wal, WriteRequest};
@@ -132,9 +133,9 @@ impl Lynx {
     pub async fn query(
         &self,
         namespace: String,
-        measurement: String,
         sql: String,
     ) -> Result<Option<Vec<RecordBatch>>, Box<dyn std::error::Error>> {
+        let table_name = parse_table_name(&sql)?;
         // Get a snapshot of the current in-memory data that
         // will be queryable.
         let tables = {
@@ -148,7 +149,7 @@ impl Lynx {
                 let mut values = Vec::new();
                 let mut all_metadata: Vec<HashMap<String, TagValue>> = Vec::new();
 
-                if let Some(partitions) = tables.get(&Table(measurement.clone())) {
+                if let Some(partitions) = tables.get(&Table(table_name.clone())) {
                     for partition_values in partitions.values() {
                         timestamps.extend_from_slice(&partition_values.timestamps);
                         values.extend_from_slice(&partition_values.values);
@@ -199,9 +200,9 @@ impl Lynx {
                     let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
 
                     // Deregister/register to show updated results from the new batch.
-                    let _ = self.query.deregister_table(&measurement);
+                    let _ = self.query.deregister_table(&table_name);
                     // TODO: is there a more elegant way to do this?
-                    self.query.register_batch(&measurement, batch).unwrap();
+                    self.query.register_batch(&table_name, batch).unwrap();
 
                     let df = self.query.sql(&sql).await.unwrap();
                     let results = df.collect().await.unwrap();
@@ -213,6 +214,27 @@ impl Lynx {
             None => Ok(None),
         }
     }
+}
+
+/// Parse the table name out of simple 'SELECT ... FROM <table_name>' style queries.
+///
+/// # Note
+/// This does NOT currently handle complex nested queries.
+fn parse_table_name(sql: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let dialect = GenericDialect {};
+    let mut ast = Parser::new(&dialect).try_with_sql(sql)?;
+
+    if let Some(factor) = ast.parse_select()?.from.into_iter().next() {
+        match factor.relation {
+            datafusion::sql::sqlparser::ast::TableFactor::Table { name, .. } => {
+                return Ok(name.to_string());
+            }
+            // TODO: more complex queries
+            _ => return Err("only basic 'SELECT .. FROM' style queries are supported".into()),
+        }
+    }
+
+    Err("could not parse a table name from query".into())
 }
 
 #[cfg(test)]
@@ -360,7 +382,6 @@ mod tests {
         let result = lynx
             .query(
                 request.namespace.clone(),
-                request.measurement.clone(),
                 "SELECT * FROM clicks".to_string(),
             )
             .await
@@ -390,7 +411,6 @@ mod tests {
         let result = lynx
             .query(
                 request.namespace.clone(),
-                request.measurement.clone(),
                 "SELECT * FROM clicks".to_string(),
             )
             .await
@@ -411,13 +431,26 @@ mod tests {
         assert!(
             lynx.query(
                 "not_exist".to_string(),
-                "not_exist".to_string(),
-                "SELECT * FROM not_exist".to_string()
+                "SELECT * FROM not_exist_table".to_string()
             )
             .await
             .unwrap()
             .is_none(),
             "Expected `None` when querying a non-existent namespace/measurement"
         );
+    }
+
+    #[test]
+    fn parse_table_name_from_query() {
+        assert_eq!(
+            parse_table_name("SELECT * FROM foo").unwrap(),
+            "foo".to_string()
+        );
+        assert_eq!(
+            parse_table_name("SELECT name, age FROM people").unwrap(),
+            "people".to_string()
+        );
+        assert!(parse_table_name("SELECT *").is_err());
+        assert!(parse_table_name("INSERT INTO my_table (id) VALUES (1)").is_err());
     }
 }

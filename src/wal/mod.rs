@@ -30,6 +30,11 @@ impl WriteRequest {
         data.write_all(&namespace_len).unwrap();
         data.write_all(&namespace_data).unwrap();
 
+        let measurement_data = self.measurement.as_bytes();
+        let measurement_len = namespace_data.len().to_be_bytes();
+        data.write_all(&measurement_data).unwrap();
+        data.write_all(&measurement_len).unwrap();
+
         let value_data = self.value.as_bytes();
         let value_len = value_data.len().to_be_bytes();
         data.write_all(&value_len).unwrap();
