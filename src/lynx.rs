@@ -133,9 +133,9 @@ impl Lynx {
     pub async fn query(
         &self,
         namespace: String,
-        measurement: String,
         sql: String,
     ) -> Result<Option<Vec<RecordBatch>>, Box<dyn std::error::Error>> {
+        let table_name = parse_table_name(&sql)?;
         // Get a snapshot of the current in-memory data that
         // will be queryable.
         let tables = {
@@ -149,7 +149,7 @@ impl Lynx {
                 let mut values = Vec::new();
                 let mut all_metadata: Vec<HashMap<String, TagValue>> = Vec::new();
 
-                if let Some(partitions) = tables.get(&Table(measurement.clone())) {
+                if let Some(partitions) = tables.get(&Table(table_name.clone())) {
                     for partition_values in partitions.values() {
                         timestamps.extend_from_slice(&partition_values.timestamps);
                         values.extend_from_slice(&partition_values.values);
@@ -200,9 +200,9 @@ impl Lynx {
                     let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
 
                     // Deregister/register to show updated results from the new batch.
-                    let _ = self.query.deregister_table(&measurement);
+                    let _ = self.query.deregister_table(&table_name);
                     // TODO: is there a more elegant way to do this?
-                    self.query.register_batch(&measurement, batch).unwrap();
+                    self.query.register_batch(&table_name, batch).unwrap();
 
                     let df = self.query.sql(&sql).await.unwrap();
                     let results = df.collect().await.unwrap();
@@ -378,7 +378,6 @@ mod tests {
         let result = lynx
             .query(
                 request.namespace.clone(),
-                request.measurement.clone(),
                 "SELECT * FROM clicks".to_string(),
             )
             .await
@@ -408,7 +407,6 @@ mod tests {
         let result = lynx
             .query(
                 request.namespace.clone(),
-                request.measurement.clone(),
                 "SELECT * FROM clicks".to_string(),
             )
             .await
@@ -429,8 +427,7 @@ mod tests {
         assert!(
             lynx.query(
                 "not_exist".to_string(),
-                "not_exist".to_string(),
-                "SELECT * FROM not_exist".to_string()
+                "SELECT * FROM not_exist_table".to_string()
             )
             .await
             .unwrap()

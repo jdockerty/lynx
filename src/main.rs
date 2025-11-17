@@ -35,7 +35,6 @@ struct AppState {
 #[derive(Deserialize)]
 struct QueryRequest {
     namespace: String,
-    table: String,
     query: String,
 }
 
@@ -68,7 +67,7 @@ async fn query_handler(
 ) -> impl IntoResponse {
     let result = state
         .lynx
-        .query(payload.namespace, payload.table, payload.query)
+        .query(payload.namespace, payload.query)
         .await
         .unwrap();
     result.map(|b| print_batches(&b));
