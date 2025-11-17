@@ -52,6 +52,7 @@ pub struct Lynx {
     /// in-memory buffer.
     wal: Mutex<Wal>,
     /// Hierarchical in-memory structure which makes the durable writes queryable.
+    #[expect(clippy::type_complexity)]
     buffer: Arc<Mutex<BTreeMap<Namespace, BTreeMap<Table, BTreeMap<PartitionKey, Measurements>>>>>,
 
     query: Arc<SessionContext>,
@@ -388,7 +389,7 @@ mod tests {
             .unwrap()
             .expect("results returned");
 
-        let expected = vec![
+        let expected = [
             "+----------------------------+---------------+",
             "| timestamp                  | value         |",
             "+----------------------------+---------------+",
@@ -417,7 +418,7 @@ mod tests {
             .unwrap()
             .expect("results returned");
 
-        let expected = vec![
+        let expected = [
             "+----------------------------+---------------+",
             "| timestamp                  | value         |",
             "+----------------------------+---------------+",
