@@ -39,6 +39,7 @@ struct QueryRequest {
 }
 
 #[derive(Serialize)]
+#[expect(dead_code)]
 struct QueryResponse {
     // TODO
     results: Vec<serde_json::Value>,
