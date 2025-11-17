@@ -216,6 +216,10 @@ impl Lynx {
     }
 }
 
+/// Parse the table name out of simple 'SELECT ... FROM <table_name>' style queries.
+///
+/// # Note
+/// This does NOT currently handle complex nested queries.
 fn parse_table_name(sql: &str) -> Result<String, Box<dyn std::error::Error>> {
     let dialect = GenericDialect {};
     let mut ast = Parser::new(&dialect).try_with_sql(sql)?;
