@@ -10,6 +10,7 @@ use datafusion::{
         datatypes::{DataType, Field, Schema, TimeUnit},
     },
     prelude::SessionContext,
+    sql::sqlparser::{dialect::GenericDialect, parser::Parser},
 };
 
 use crate::wal::{TagValue, Wal, WriteRequest};
@@ -213,6 +214,23 @@ impl Lynx {
             None => Ok(None),
         }
     }
+}
+
+fn parse_table_name(sql: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let dialect = GenericDialect {};
+    let mut ast = Parser::new(&dialect).try_with_sql(sql)?;
+
+    for a in ast.parse_select()?.from {
+        match a.relation {
+            datafusion::sql::sqlparser::ast::TableFactor::Table { name, .. } => {
+                return Ok(name.to_string());
+            }
+            // TODO: more complex queries
+            _ => return Err("only basic 'SELECT .. FROM' style queries are supported".into()),
+        }
+    }
+
+    Err("could not parse a table name from query".into())
 }
 
 #[cfg(test)]
@@ -419,5 +437,19 @@ mod tests {
             .is_none(),
             "Expected `None` when querying a non-existent namespace/measurement"
         );
+    }
+
+    #[test]
+    fn parse_table_name_from_query() {
+        assert_eq!(
+            parse_table_name("SELECT * FROM foo").unwrap(),
+            "foo".to_string()
+        );
+        assert_eq!(
+            parse_table_name("SELECT name, age FROM people").unwrap(),
+            "people".to_string()
+        );
+        assert!(parse_table_name("SELECT *").is_err());
+        assert!(parse_table_name("INSERT INTO my_table (id) VALUES (1)").is_err());
     }
 }
