@@ -220,8 +220,8 @@ fn parse_table_name(sql: &str) -> Result<String, Box<dyn std::error::Error>> {
     let dialect = GenericDialect {};
     let mut ast = Parser::new(&dialect).try_with_sql(sql)?;
 
-    for a in ast.parse_select()?.from {
-        match a.relation {
+    if let Some(factor) = ast.parse_select()?.from.into_iter().next() {
+        match factor.relation {
             datafusion::sql::sqlparser::ast::TableFactor::Table { name, .. } => {
                 return Ok(name.to_string());
             }
