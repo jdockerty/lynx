@@ -319,7 +319,7 @@ mod tests {
             .unwrap()
             .expect("results returned");
 
-        let expected = vec![
+        let expected = [
             "+----------------------------+---------------+",
             "| timestamp                  | value         |",
             "+----------------------------+---------------+",
@@ -348,7 +348,7 @@ mod tests {
             .unwrap()
             .expect("results returned");
 
-        let expected = vec![
+        let expected = [
             "+----------------------------+---------------+",
             "| timestamp                  | value         |",
             "+----------------------------+---------------+",

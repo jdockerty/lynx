@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashMap,
+    fmt::Display,
     fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -22,23 +23,23 @@ pub(crate) struct WriteRequest {
 }
 
 impl WriteRequest {
-    fn to_bytes(self) -> Vec<u8> {
+    fn into_bytes(self) -> Vec<u8> {
         let mut data = Vec::with_capacity(1024);
 
         let namespace_data = self.namespace.as_bytes();
         let namespace_len = namespace_data.len().to_be_bytes();
         data.write_all(&namespace_len).unwrap();
-        data.write_all(&namespace_data).unwrap();
+        data.write_all(namespace_data).unwrap();
 
         let measurement_data = self.measurement.as_bytes();
         let measurement_len = namespace_data.len().to_be_bytes();
-        data.write_all(&measurement_data).unwrap();
+        data.write_all(measurement_data).unwrap();
         data.write_all(&measurement_len).unwrap();
 
         let value_data = self.value.as_bytes();
         let value_len = value_data.len().to_be_bytes();
         data.write_all(&value_len).unwrap();
-        data.write_all(&value_data).unwrap();
+        data.write_all(value_data).unwrap();
 
         let tag_count = self.metadata.len().to_be_bytes();
         data.write_all(&tag_count).unwrap();
@@ -53,14 +54,14 @@ impl WriteRequest {
             let key_data = key.as_bytes();
             let key_size = key_data.len().to_be_bytes();
             data.write_all(&key_size).unwrap();
-            data.write_all(&key_data).unwrap();
+            data.write_all(key_data).unwrap();
 
             match value {
                 TagValue::String(s) => {
                     let value_data = s.as_bytes();
                     let value_size = value_data.len().to_be_bytes();
                     data.write_all(&value_size).unwrap();
-                    data.write_all(&value_data).unwrap();
+                    data.write_all(value_data).unwrap();
                 }
                 TagValue::Number(n) => {
                     data.write_all(&n.to_be_bytes()).unwrap();
@@ -150,11 +151,11 @@ pub enum TagValue {
     Number(u64),
 }
 
-impl ToString for TagValue {
-    fn to_string(&self) -> String {
+impl Display for TagValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TagValue::String(s) => s.clone(),
-            TagValue::Number(n) => n.to_string(),
+            TagValue::String(s) => write!(f, "{s}"),
+            TagValue::Number(n) => write!(f, "{n}"),
         }
     }
 }
@@ -178,7 +179,7 @@ impl Wal {
         if self.active_segment.size > self.max_segment_size {
             self.rotate()?;
         }
-        let bytes = data.to_bytes();
+        let bytes = data.into_bytes();
         self.active_segment.write(bytes)?;
         Ok(())
     }
@@ -217,7 +218,7 @@ impl Segment {
     }
 
     pub fn write(&mut self, data: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
-        self.active_file.write(&data)?;
+        self.active_file.write_all(&data)?;
         self.active_file.flush()?;
         self.size += data.len() as u64;
         Ok(())
@@ -251,7 +252,7 @@ mod test {
         let mut segment = Segment::new(1, dir.path());
         let data = "hello world";
         segment.write(data.into()).unwrap();
-        let contents = std::fs::read(dir.path().join(format!("1.wal"))).unwrap();
+        let contents = std::fs::read(dir.path().join("1.wal")).unwrap();
         let written = String::from_utf8_lossy(&contents);
         assert_eq!(segment.id, 1);
         assert_eq!(written, format!("{WAL_HEADER}{data}"))
