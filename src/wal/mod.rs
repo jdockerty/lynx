@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 const WAL_HEADER: &str = "LYNX1";
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct WriteRequest {
     pub namespace: String,
     pub measurement: String,

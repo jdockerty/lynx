@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, btree_map::Entry},
+    collections::{HashMap, HashSet},
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -13,12 +13,10 @@ use datafusion::{
     sql::sqlparser::{dialect::GenericDialect, parser::Parser},
 };
 
-use crate::wal::{TagValue, Wal, WriteRequest};
-
-/// Time format string for daily partition keys.
-///
-/// This means that data is partitioned by day at all times currently.
-const DAILY_PARTITION: &str = "%Y-%m-%d";
+use crate::{
+    buffer::{MemBuffer, Namespace, Table},
+    wal::{TagValue, Wal, WriteRequest},
+};
 
 #[derive(Default, Debug, Clone)]
 pub struct Measurements {
@@ -26,23 +24,6 @@ pub struct Measurements {
     pub metadata: Vec<HashMap<String, TagValue>>,
     pub values: Vec<String>,
 }
-
-#[derive(Debug, Ord, Eq, PartialEq, PartialOrd, Clone)]
-struct PartitionKey(String);
-
-impl PartitionKey {
-    pub fn new(timestamp: i64) -> Self {
-        let utc_datetime = chrono::DateTime::from_timestamp_micros(timestamp)
-            .expect("timestamps are currently assumed to be microseconds");
-        Self(utc_datetime.format(DAILY_PARTITION).to_string())
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Namespace(String);
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Table(String);
 
 /// Lynx, an in-memory time-series database with durable writes.
 pub struct Lynx {
@@ -52,7 +33,7 @@ pub struct Lynx {
     /// in-memory buffer.
     wal: Mutex<Wal>,
     /// Hierarchical in-memory structure which makes the durable writes queryable.
-    buffer: Arc<Mutex<BTreeMap<Namespace, BTreeMap<Table, BTreeMap<PartitionKey, Measurements>>>>>,
+    buffer: MemBuffer,
 
     query: Arc<SessionContext>,
 }
@@ -62,7 +43,7 @@ impl Lynx {
     pub fn new(wal_directory: impl AsRef<Path>, max_segment_size: u64) -> Self {
         Self {
             wal: Mutex::new(Wal::new(wal_directory, max_segment_size)),
-            buffer: Arc::new(Mutex::new(BTreeMap::new())),
+            buffer: MemBuffer::new(),
             query: Arc::new(SessionContext::new()),
         }
     }
@@ -73,60 +54,8 @@ impl Lynx {
     /// an in-memory buffer.
     pub fn write(&self, payload: WriteRequest) -> Result<(), Box<dyn std::error::Error>> {
         self.wal.lock().unwrap().write(payload.clone())?;
+        self.buffer.insert(payload)?;
 
-        let mut buffer_guard = self.buffer.lock().unwrap();
-        match buffer_guard.entry(Namespace(payload.namespace)) {
-            Entry::Vacant(namespaces) => {
-                let mut tables = BTreeMap::new();
-                tables.insert(
-                    Table(payload.measurement),
-                    BTreeMap::from_iter([(
-                        PartitionKey::new(payload.timestamp),
-                        Measurements {
-                            timestamps: vec![payload.timestamp],
-                            metadata: vec![payload.metadata],
-                            values: vec![payload.value],
-                        },
-                    )]),
-                );
-                namespaces.insert(tables);
-            }
-            Entry::Occupied(mut namespace_entry) => {
-                let tables = namespace_entry.get_mut();
-
-                match tables.entry(Table(payload.measurement)) {
-                    Entry::Vacant(table) => {
-                        table.insert(BTreeMap::from_iter([(
-                            PartitionKey::new(payload.timestamp),
-                            Measurements {
-                                timestamps: vec![payload.timestamp],
-                                metadata: vec![payload.metadata],
-                                values: vec![payload.value],
-                            },
-                        )]));
-                    }
-                    Entry::Occupied(mut table_entry) => {
-                        let partitions = table_entry.get_mut();
-
-                        match partitions.entry(PartitionKey::new(payload.timestamp)) {
-                            Entry::Vacant(init) => {
-                                init.insert(Measurements {
-                                    timestamps: vec![payload.timestamp],
-                                    metadata: vec![payload.metadata],
-                                    values: vec![payload.value],
-                                });
-                            }
-                            Entry::Occupied(mut buffered_measurements) => {
-                                let buffered_measurements = buffered_measurements.get_mut();
-                                buffered_measurements.timestamps.push(payload.timestamp);
-                                buffered_measurements.metadata.push(payload.metadata);
-                                buffered_measurements.values.push(payload.value);
-                            }
-                        };
-                    }
-                };
-            }
-        };
         Ok(())
     }
 
@@ -138,10 +67,7 @@ impl Lynx {
         let table_name = parse_table_name(&sql)?;
         // Get a snapshot of the current in-memory data that
         // will be queryable.
-        let tables = {
-            let buffer = self.buffer.lock().unwrap();
-            buffer.get(&Namespace(namespace.clone())).cloned()
-        };
+        let tables = self.buffer.get(&Namespace(namespace.clone()));
 
         match tables {
             Some(tables) => {
@@ -239,6 +165,8 @@ fn parse_table_name(sql: &str) -> Result<String, Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    use crate::buffer::PartitionKey;
+
     use super::*;
     use datafusion::assert_batches_eq;
     use tempfile::TempDir;
@@ -273,9 +201,8 @@ mod tests {
         lynx.write(request1.clone()).unwrap();
         lynx.write(request2).unwrap();
 
-        let buffer = lynx.buffer.lock().unwrap();
-        let tables = buffer.get(&Namespace("metrics".to_string())).unwrap();
-        let partitions = tables.get(&Table("cpu".to_string())).unwrap();
+        let tables = lynx.buffer.get(&Namespace("metrics".to_string())).unwrap();
+        let partitions = tables.get(&Table("cpu".to_string())).unwrap().clone();
         assert_eq!(partitions.len(), 1);
 
         // The above requests are part of the same partition, as
@@ -313,10 +240,15 @@ mod tests {
         lynx.write(request1).unwrap();
         lynx.write(request2).unwrap();
 
-        let buffer = lynx.buffer.lock().unwrap();
-        assert_eq!(buffer.len(), 2);
-        assert!(buffer.contains_key(&Namespace("cpu".to_string())));
-        assert!(buffer.contains_key(&Namespace("memory".to_string())));
+        assert_eq!(lynx.buffer.namespace_count(), 2);
+        assert!(
+            lynx.buffer
+                .contains_namespace(&Namespace("cpu".to_string()))
+        );
+        assert!(
+            lynx.buffer
+                .contains_namespace(&Namespace("memory".to_string()))
+        );
     }
 
     #[test]
@@ -343,8 +275,7 @@ mod tests {
         lynx.write(request1.clone()).unwrap();
         lynx.write(request2.clone()).unwrap();
 
-        let buffer = lynx.buffer.lock().unwrap();
-        let tables = buffer.get(&Namespace("events".to_string())).unwrap();
+        let tables = lynx.buffer.get(&Namespace("events".to_string())).unwrap();
         let partitions = tables.get(&Table("clicks".to_string())).unwrap();
 
         assert_eq!(partitions.len(), 2);
