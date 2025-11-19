@@ -67,7 +67,7 @@ impl Lynx {
         let table_name = parse_table_name(&sql)?;
         // Get a snapshot of the current in-memory data that
         // will be queryable.
-        let tables = self.buffer.get(&Namespace(namespace.clone()));
+        let tables = self.buffer.tables(&Namespace(namespace.clone()));
 
         match tables {
             Some(tables) => {
@@ -201,8 +201,10 @@ mod tests {
         lynx.write(request1.clone()).unwrap();
         lynx.write(request2).unwrap();
 
-        let tables = lynx.buffer.get(&Namespace("metrics".to_string())).unwrap();
-        let partitions = tables.get(&Table("cpu".to_string())).unwrap().clone();
+        let namespace = Namespace("metrics".to_string());
+        let table = Table("cpu".to_string());
+
+        let partitions = lynx.buffer.partitions(&namespace, &table).unwrap();
         assert_eq!(partitions.len(), 1);
 
         // The above requests are part of the same partition, as
@@ -275,8 +277,13 @@ mod tests {
         lynx.write(request1.clone()).unwrap();
         lynx.write(request2.clone()).unwrap();
 
-        let tables = lynx.buffer.get(&Namespace("events".to_string())).unwrap();
-        let partitions = tables.get(&Table("clicks".to_string())).unwrap();
+        let partitions = lynx
+            .buffer
+            .partitions(
+                &Namespace("events".to_string()),
+                &Table("clicks".to_string()),
+            )
+            .unwrap();
 
         assert_eq!(partitions.len(), 2);
 
