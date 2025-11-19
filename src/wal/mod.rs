@@ -4,15 +4,17 @@ use std::{
     collections::HashMap,
     fmt::Display,
     fs::File,
-    io::{Read, Write},
+    io::{BufReader, ErrorKind, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
 
+use crate::buffer::MemBuffer;
+
 const WAL_HEADER: &str = "LYNX1";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct WriteRequest {
     pub namespace: String,
     pub measurement: String,
@@ -24,7 +26,7 @@ pub(crate) struct WriteRequest {
 
 impl WriteRequest {
     fn into_bytes(self) -> Vec<u8> {
-        let mut data = Vec::with_capacity(1024);
+        let mut data = Vec::with_capacity(2048);
 
         let namespace_data = self.namespace.as_bytes();
         let namespace_len = namespace_data.len().to_be_bytes();
@@ -32,9 +34,9 @@ impl WriteRequest {
         data.write_all(namespace_data).unwrap();
 
         let measurement_data = self.measurement.as_bytes();
-        let measurement_len = namespace_data.len().to_be_bytes();
-        data.write_all(measurement_data).unwrap();
+        let measurement_len = measurement_data.len().to_be_bytes();
         data.write_all(&measurement_len).unwrap();
+        data.write_all(measurement_data).unwrap();
 
         let value_data = self.value.as_bytes();
         let value_len = value_data.len().to_be_bytes();
@@ -74,78 +76,86 @@ impl WriteRequest {
         data
     }
 
-    fn from_reader(r: &mut impl Read) -> Self {
+    fn from_reader(r: &mut impl Read) -> Option<Self> {
         let mut namespace_len = [0u8; 8];
-        r.read_exact(&mut namespace_len).unwrap();
-        let namespace_len = usize::from_be_bytes(namespace_len);
-        let mut namespace_data = vec![0u8; namespace_len];
-        r.read_exact(&mut namespace_data).unwrap();
-        let namespace = String::from_utf8(namespace_data).unwrap();
+        // If we hit an EOF on the namespace, then we can stop reading.
+        //
+        // TODO: probably a better way to do this with an WalReader style iterator.
+        match r.read_exact(&mut namespace_len) {
+            Ok(_) => {
+                let namespace_len = usize::from_be_bytes(namespace_len);
+                let mut namespace_data = vec![0u8; namespace_len];
+                r.read_exact(&mut namespace_data).unwrap();
+                let namespace = String::from_utf8(namespace_data).unwrap();
 
-        let mut measurement_len = [0u8; 8];
-        r.read_exact(&mut measurement_len).unwrap();
-        let measurement_len = usize::from_be_bytes(measurement_len);
-        let mut measurement_data = vec![0u8; measurement_len];
-        r.read_exact(&mut measurement_data).unwrap();
-        let measurement = String::from_utf8(measurement_data).unwrap();
+                let mut measurement_len = [0u8; 8];
+                r.read_exact(&mut measurement_len).unwrap();
+                let measurement_len = usize::from_be_bytes(measurement_len);
+                let mut measurement_data = vec![0u8; measurement_len];
+                r.read_exact(&mut measurement_data).unwrap();
+                let measurement = String::from_utf8(measurement_data).unwrap();
 
-        let mut value_len = [0u8; 8];
-        r.read_exact(&mut value_len).unwrap();
-        let value_len = usize::from_be_bytes(value_len);
-        let mut value_data = vec![0u8; value_len];
-        r.read_exact(&mut value_data).unwrap();
-        let value = String::from_utf8(value_data).unwrap();
+                let mut value_len = [0u8; 8];
+                r.read_exact(&mut value_len).unwrap();
+                let value_len = usize::from_be_bytes(value_len);
+                let mut value_data = vec![0u8; value_len];
+                r.read_exact(&mut value_data).unwrap();
+                let value = String::from_utf8(value_data).unwrap();
 
-        let mut tag_count = [0u8; 8];
-        r.read_exact(&mut tag_count).unwrap();
-        let tag_count = usize::from_be_bytes(tag_count);
+                let mut tag_count = [0u8; 8];
+                r.read_exact(&mut tag_count).unwrap();
+                let tag_count = usize::from_be_bytes(tag_count);
 
-        let mut metadata = HashMap::with_capacity(tag_count);
-        for _ in 0..tag_count {
-            let mut value_type = [0u8; 1];
-            r.read_exact(&mut value_type).unwrap();
+                let mut metadata = HashMap::with_capacity(tag_count);
+                for _ in 0..tag_count {
+                    let mut value_type = [0u8; 1];
+                    r.read_exact(&mut value_type).unwrap();
 
-            let mut key_size = [0u8; 8];
-            r.read_exact(&mut key_size).unwrap();
-            let key_size = usize::from_be_bytes(key_size);
-            let mut key_data = vec![0u8; key_size];
-            r.read_exact(&mut key_data).unwrap();
-            let key = String::from_utf8(key_data).unwrap();
+                    let mut key_size = [0u8; 8];
+                    r.read_exact(&mut key_size).unwrap();
+                    let key_size = usize::from_be_bytes(key_size);
+                    let mut key_data = vec![0u8; key_size];
+                    r.read_exact(&mut key_data).unwrap();
+                    let key = String::from_utf8(key_data).unwrap();
 
-            let tag_value = match value_type[0] {
-                0 => {
-                    let mut value_size = [0u8; 8];
-                    r.read_exact(&mut value_size).unwrap();
-                    let value_size = usize::from_be_bytes(value_size);
-                    let mut value_data = vec![0u8; value_size];
-                    r.read_exact(&mut value_data).unwrap();
-                    TagValue::String(String::from_utf8(value_data).unwrap())
+                    let tag_value = match value_type[0] {
+                        0 => {
+                            let mut value_size = [0u8; 8];
+                            r.read_exact(&mut value_size).unwrap();
+                            let value_size = usize::from_be_bytes(value_size);
+                            let mut value_data = vec![0u8; value_size];
+                            r.read_exact(&mut value_data).unwrap();
+                            TagValue::String(String::from_utf8(value_data).unwrap())
+                        }
+                        1 => {
+                            let mut num = [0u8; 8];
+                            r.read_exact(&mut num).unwrap();
+                            TagValue::Number(u64::from_be_bytes(num))
+                        }
+                        _ => panic!("Invalid tag value type"),
+                    };
+                    metadata.insert(key, tag_value);
                 }
-                1 => {
-                    let mut num = [0u8; 8];
-                    r.read_exact(&mut num).unwrap();
-                    TagValue::Number(u64::from_be_bytes(num))
-                }
-                _ => panic!("Invalid tag value type"),
-            };
-            metadata.insert(key, tag_value);
-        }
 
-        let mut timestamp = [0u8; 8];
-        r.read_exact(&mut timestamp).unwrap();
-        let timestamp = i64::from_be_bytes(timestamp);
+                let mut timestamp = [0u8; 8];
+                r.read_exact(&mut timestamp).unwrap();
+                let timestamp = i64::from_be_bytes(timestamp);
 
-        WriteRequest {
-            namespace,
-            measurement,
-            value,
-            metadata,
-            timestamp,
+                Some(WriteRequest {
+                    namespace,
+                    measurement,
+                    value,
+                    metadata,
+                    timestamp,
+                })
+            }
+            Err(e) if e.kind() == ErrorKind::UnexpectedEof => None,
+            Err(e) => panic!("{e:?}"),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TagValue {
     String(String),
     Number(u64),
@@ -167,9 +177,9 @@ pub struct Wal {
 }
 
 impl Wal {
-    pub fn new(directory: impl AsRef<Path>, max_segment_size: u64) -> Self {
+    pub fn new(directory: impl AsRef<Path>, segment_id: u64, max_segment_size: u64) -> Self {
         Self {
-            active_segment: Segment::new(0, &directory),
+            active_segment: Segment::new(segment_id, &directory),
             directory: directory.as_ref().to_path_buf(),
             max_segment_size,
         }
@@ -190,6 +200,44 @@ impl Wal {
         self.active_segment = new_segment;
         Ok(())
     }
+
+    /// Perform a WAL replay into the [`MemBuffer`], returning the highest
+    /// [`Segment`] ID that was observed.
+    pub fn replay(
+        directory: impl AsRef<Path>,
+        buffer: &MemBuffer,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
+        let files = std::fs::read_dir(directory.as_ref())?;
+
+        let mut highest_segment = 0;
+
+        for f in files {
+            let f = f?;
+            if f.file_type()?.is_dir() {
+                continue;
+            }
+
+            let segment_path = f.path();
+            let segment_id = segment_path
+                .file_stem()
+                .expect("segment file has name")
+                .to_string_lossy()
+                .parse::<u64>()?;
+
+            highest_segment = highest_segment.max(segment_id);
+
+            let segment_file = File::open(segment_path)?;
+            let mut reader = BufReader::new(segment_file);
+
+            // TODO: verify header
+            reader.seek(SeekFrom::Start(WAL_HEADER.len() as u64))?;
+            while let Some(write) = WriteRequest::from_reader(&mut reader) {
+                buffer.insert(write)?;
+            }
+        }
+
+        Ok(highest_segment)
+    }
 }
 
 struct Segment {
@@ -200,8 +248,7 @@ struct Segment {
 
 impl Segment {
     pub fn new(id: u64, directory: impl AsRef<Path>) -> Self {
-        let mut file =
-            std::fs::File::create_new(directory.as_ref().join(format!("{id}.wal"))).unwrap();
+        let mut file = File::create_new(directory.as_ref().join(format!("{id}.wal"))).unwrap();
 
         file.write_all(WAL_HEADER.as_bytes())
             .expect("can write header to new file");
@@ -231,11 +278,17 @@ impl Segment {
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashMap;
+    use std::{
+        collections::HashMap,
+        io::{BufReader, Seek, SeekFrom},
+    };
 
     use tempfile::TempDir;
 
-    use crate::wal::{Segment, WAL_HEADER, Wal, WriteRequest};
+    use crate::{
+        buffer::{MemBuffer, Namespace, Table},
+        wal::{Segment, WAL_HEADER, Wal, WriteRequest},
+    };
 
     #[test]
     fn segment_header() {
@@ -276,7 +329,7 @@ mod test {
     #[test]
     fn wal_rotation() {
         let dir = TempDir::new().unwrap();
-        let mut wal = Wal::new(dir.path(), 10);
+        let mut wal = Wal::new(dir.path(), 0, 10);
         assert_eq!(wal.active_segment.id(), 0);
 
         let write = WriteRequest {
@@ -294,5 +347,59 @@ mod test {
             1,
             "Most recent write should cause rotation to occur"
         );
+    }
+
+    #[test]
+    fn from_reader() {
+        let dir = TempDir::new().unwrap();
+        let mut wal = Wal::new(dir.path(), 0, 10);
+        let write = WriteRequest {
+            namespace: "hello".to_string(),
+            measurement: "test".to_string(),
+            value: "world".to_string(),
+            metadata: HashMap::new(),
+            timestamp: 100,
+        };
+        wal.write(write.clone()).unwrap();
+
+        let segment = std::fs::File::open(dir.path().join("0.wal")).unwrap();
+        let mut reader = BufReader::new(segment);
+
+        // Skip over the header
+        // TODO: verify the segment is a Lynx WAL file.
+        reader
+            .seek(SeekFrom::Start(WAL_HEADER.len() as u64))
+            .unwrap();
+
+        let read = WriteRequest::from_reader(&mut reader).unwrap();
+        assert_eq!(read, write);
+    }
+
+    #[test]
+    fn wal_replay() {
+        let dir = TempDir::new().unwrap();
+        let mut wal = Wal::new(dir.path(), 1, 10);
+
+        let write = WriteRequest {
+            namespace: "hello".to_string(),
+            measurement: "test".to_string(),
+            value: "world".to_string(),
+            metadata: HashMap::new(),
+            timestamp: 100,
+        };
+
+        (0..10).for_each(|_| wal.write(write.clone()).unwrap());
+        assert_eq!(wal.active_segment.id(), 10);
+        drop(wal);
+
+        let buffer = MemBuffer::new();
+        let segment_id = Wal::replay(dir.path(), &buffer).unwrap();
+        let namespace = Namespace("hello".to_string());
+        let table = Table("test".to_string());
+
+        assert_eq!(segment_id, 10);
+        assert_eq!(buffer.namespace_count(), 1);
+        assert_eq!(buffer.table_count(&namespace).unwrap(), 1);
+        assert_eq!(buffer.partitions(&namespace, &table).unwrap().len(), 1);
     }
 }
