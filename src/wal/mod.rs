@@ -190,6 +190,44 @@ impl Wal {
         self.active_segment = new_segment;
         Ok(())
     }
+
+    /// Perform a WAL replay into the [`MemBuffer`], returning the highest
+    /// [`Segment`] ID that was observed.
+    pub fn replay(
+        directory: impl AsRef<Path>,
+        buffer: &MemBuffer,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
+        let files = std::fs::read_dir(directory.as_ref())?;
+
+        let mut highest_segment = 0;
+
+        for f in files {
+            let f = f?;
+            if f.file_type()?.is_dir() {
+                continue;
+            }
+
+            let segment_path = f.path();
+            let segment_id = segment_path
+                .file_stem()
+                .expect("segment file has name")
+                .to_string_lossy()
+                .parse::<u64>()?;
+
+            highest_segment = highest_segment.max(segment_id);
+
+            let segment_file = File::open(segment_path)?;
+            let mut reader = BufReader::new(segment_file);
+
+            // TODO: verify header
+            reader.seek(SeekFrom::Start(WAL_HEADER.len() as u64))?;
+            while let Some(write) = WriteRequest::from_reader(&mut reader) {
+                buffer.insert(write)?;
+            }
+        }
+
+        Ok(highest_segment)
+    }
 }
 
 struct Segment {
@@ -294,5 +332,58 @@ mod test {
             1,
             "Most recent write should cause rotation to occur"
         );
+    }
+
+    #[test]
+    fn from_reader() {
+        let dir = TempDir::new().unwrap();
+        let mut wal = Wal::new(dir.path(), 10);
+        let write = WriteRequest {
+            namespace: "hello".to_string(),
+            measurement: "test".to_string(),
+            value: "world".to_string(),
+            metadata: HashMap::new(),
+            timestamp: 100,
+        };
+        wal.write(write.clone()).unwrap();
+
+        let segment = std::fs::File::open(dir.path().join("0.wal")).unwrap();
+        let mut reader = BufReader::new(segment);
+
+        // Skip over the header
+        // TODO: verify the segment is a Lynx WAL file.
+        reader
+            .seek(SeekFrom::Start(WAL_HEADER.len() as u64))
+            .unwrap();
+
+        let read = WriteRequest::from_reader(&mut reader).unwrap();
+        assert_eq!(read, write);
+    }
+
+    #[test]
+    fn wal_replay() {
+        let dir = TempDir::new().unwrap();
+        let mut wal = Wal::new(dir.path(), 10);
+
+        let write = WriteRequest {
+            namespace: "hello".to_string(),
+            measurement: "test".to_string(),
+            value: "world".to_string(),
+            metadata: HashMap::new(),
+            timestamp: 100,
+        };
+
+        (0..10).for_each(|_| wal.write(write.clone()).unwrap());
+        drop(wal);
+
+        let buffer = MemBuffer::new();
+        let segment_id = Wal::replay(dir.path(), &buffer).unwrap();
+        let namespace = Namespace("hello".to_string());
+        let table = Table("test".to_string());
+
+        assert_eq!(segment_id, 9);
+        assert_eq!(buffer.namespace_count(), 1);
+        assert_eq!(buffer.table_count(&namespace).unwrap(), 1);
+        assert_eq!(buffer.partitions(&namespace, &table).unwrap().len(), 1);
     }
 }
