@@ -177,9 +177,9 @@ pub struct Wal {
 }
 
 impl Wal {
-    pub fn new(directory: impl AsRef<Path>, max_segment_size: u64) -> Self {
+    pub fn new(directory: impl AsRef<Path>, segment_id: u64, max_segment_size: u64) -> Self {
         Self {
-            active_segment: Segment::new(0, &directory),
+            active_segment: Segment::new(segment_id, &directory),
             directory: directory.as_ref().to_path_buf(),
             max_segment_size,
         }
@@ -329,7 +329,7 @@ mod test {
     #[test]
     fn wal_rotation() {
         let dir = TempDir::new().unwrap();
-        let mut wal = Wal::new(dir.path(), 10);
+        let mut wal = Wal::new(dir.path(), 0, 10);
         assert_eq!(wal.active_segment.id(), 0);
 
         let write = WriteRequest {
@@ -352,7 +352,7 @@ mod test {
     #[test]
     fn from_reader() {
         let dir = TempDir::new().unwrap();
-        let mut wal = Wal::new(dir.path(), 10);
+        let mut wal = Wal::new(dir.path(), 0, 10);
         let write = WriteRequest {
             namespace: "hello".to_string(),
             measurement: "test".to_string(),
@@ -378,7 +378,7 @@ mod test {
     #[test]
     fn wal_replay() {
         let dir = TempDir::new().unwrap();
-        let mut wal = Wal::new(dir.path(), 10);
+        let mut wal = Wal::new(dir.path(), 1, 10);
 
         let write = WriteRequest {
             namespace: "hello".to_string(),
@@ -389,6 +389,7 @@ mod test {
         };
 
         (0..10).for_each(|_| wal.write(write.clone()).unwrap());
+        assert_eq!(wal.active_segment.id(), 10);
         drop(wal);
 
         let buffer = MemBuffer::new();
@@ -396,7 +397,7 @@ mod test {
         let namespace = Namespace("hello".to_string());
         let table = Table("test".to_string());
 
-        assert_eq!(segment_id, 9);
+        assert_eq!(segment_id, 10);
         assert_eq!(buffer.namespace_count(), 1);
         assert_eq!(buffer.table_count(&namespace).unwrap(), 1);
         assert_eq!(buffer.partitions(&namespace, &table).unwrap().len(), 1);
