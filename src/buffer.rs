@@ -111,11 +111,12 @@ impl MemBuffer {
         &self,
         namespace: &Namespace,
     ) -> Option<BTreeMap<Table, BTreeMap<PartitionKey, Measurements>>> {
-        self.inner.lock().unwrap().get(&namespace).cloned()
+        self.inner.lock().unwrap().get(namespace).cloned()
     }
 
     /// Return the partitions of a [`Table`] within a [`Namespace`],
     /// if any, otherwise [`None`].
+    #[allow(dead_code)]
     pub fn partitions(
         &self,
         namespace: &Namespace,
