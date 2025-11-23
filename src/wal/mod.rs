@@ -276,6 +276,83 @@ impl Segment {
     }
 }
 
+/// Reader implementation for a WAL, passing the
+/// replayed values from each [`Segment`] into
+/// the [`MemBuffer`].
+struct WalReader<'a> {
+    directory: PathBuf,
+    buffer: &'a MemBuffer,
+}
+
+impl<'a> WalReader<'a> {
+    pub fn new(directory: impl AsRef<Path>, buffer: &'a MemBuffer) -> Self {
+        Self {
+            directory: directory.as_ref().to_path_buf(),
+            buffer,
+        }
+    }
+
+    /// Read encoded values into the [`MemBuffer`], returning
+    /// the highest segment ID that was observed.
+    pub fn read(&self) -> Result<u64, Box<dyn std::error::Error>> {
+        let files = std::fs::read_dir(&self.directory)?;
+
+        let mut highest_segment = 0;
+
+        for file in files {
+            let file = file?;
+            if file.file_type()?.is_dir() {
+                continue;
+            }
+
+            let segment_reader = SegmentReader::new(file.path(), self.buffer)?;
+            highest_segment = highest_segment.max(segment_reader.segment_id);
+            segment_reader.read()?;
+        }
+
+        Ok(highest_segment)
+    }
+}
+
+/// Reader implementation for a [`Segment`].
+struct SegmentReader<'a> {
+    segment_path: PathBuf,
+    segment_id: u64,
+    buffer: &'a MemBuffer,
+}
+
+impl<'a> SegmentReader<'a> {
+    fn new(
+        segment_path: impl AsRef<Path>,
+        buffer: &'a MemBuffer,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        println!("{}", segment_path.as_ref().display());
+        let segment_id = segment_path
+            .as_ref()
+            .file_stem()
+            .expect("segment file has name")
+            .to_string_lossy()
+            .parse::<u64>()?;
+        Ok(Self {
+            segment_path: segment_path.as_ref().to_path_buf(),
+            segment_id,
+            buffer,
+        })
+    }
+
+    fn read(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let segment_file = File::open(&self.segment_path)?;
+        let mut reader = BufReader::new(segment_file);
+
+        // TODO: verify header
+        reader.seek(SeekFrom::Start(WAL_HEADER.len() as u64))?;
+        while let Some(write) = WriteRequest::from_reader(&mut reader) {
+            self.buffer.insert(write)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::{
@@ -286,8 +363,8 @@ mod test {
     use tempfile::TempDir;
 
     use crate::{
-        buffer::{MemBuffer, Namespace, Table},
-        wal::{Segment, WAL_HEADER, Wal, WriteRequest},
+        buffer::{MemBuffer, Namespace, PartitionKey, Table},
+        wal::{Segment, SegmentReader, WAL_HEADER, Wal, WalReader, WriteRequest},
     };
 
     #[test]
@@ -401,5 +478,90 @@ mod test {
         assert_eq!(buffer.namespace_count(), 1);
         assert_eq!(buffer.table_count(&namespace).unwrap(), 1);
         assert_eq!(buffer.partitions(&namespace, &table).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn wal_reader() {
+        let dir = TempDir::new().unwrap();
+        let mut wal = Wal::new(dir.path(), 1, 10);
+
+        let write = WriteRequest {
+            namespace: "hello".to_string(),
+            measurement: "test".to_string(),
+            value: "world".to_string(),
+            metadata: HashMap::new(),
+            timestamp: 100,
+        };
+
+        (0..10).for_each(|_| wal.write(write.clone()).unwrap());
+
+        drop(wal);
+
+        let buffer = MemBuffer::new();
+        let reader = WalReader::new(dir.path(), &buffer);
+        let max_segment_id = reader.read().unwrap();
+        assert_eq!(max_segment_id, 10);
+
+        assert_eq!(
+            buffer
+                .tables(&Namespace("hello".to_string()))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            buffer
+                .partitions(&Namespace("hello".to_string()), &Table("test".to_string()))
+                .unwrap()
+                .get(&PartitionKey::new(write.timestamp))
+                .unwrap()
+                .timestamps
+                .len(),
+            10,
+            "Expected 10 writes to be present from timestamp length"
+        );
+    }
+
+    #[test]
+    fn segment_reader() {
+        let dir = TempDir::new().unwrap();
+        let mut wal = Wal::new(dir.path(), 1, 10);
+
+        let write = WriteRequest {
+            namespace: "hello".to_string(),
+            measurement: "test".to_string(),
+            value: "world".to_string(),
+            metadata: HashMap::new(),
+            timestamp: 100,
+        };
+
+        wal.write(write.clone()).unwrap();
+
+        let buffer = MemBuffer::new();
+        let reader = SegmentReader::new(
+            dir.path().join(format!("{}.wal", wal.active_segment.id())),
+            &buffer,
+        )
+        .unwrap();
+        assert_eq!(reader.segment_id, wal.active_segment.id);
+        reader.read().unwrap();
+
+        assert_eq!(
+            buffer
+                .tables(&Namespace("hello".to_string()))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            buffer
+                .partitions(&Namespace("hello".to_string()), &Table("test".to_string()))
+                .unwrap()
+                .get(&PartitionKey::new(write.timestamp))
+                .unwrap()
+                .timestamps
+                .len(),
+            1,
+        );
     }
 }
