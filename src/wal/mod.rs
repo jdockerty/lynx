@@ -207,36 +207,7 @@ impl Wal {
         directory: impl AsRef<Path>,
         buffer: &MemBuffer,
     ) -> Result<u64, Box<dyn std::error::Error>> {
-        let files = std::fs::read_dir(directory.as_ref())?;
-
-        let mut highest_segment = 0;
-
-        for f in files {
-            let f = f?;
-            if f.file_type()?.is_dir() {
-                continue;
-            }
-
-            let segment_path = f.path();
-            let segment_id = segment_path
-                .file_stem()
-                .expect("segment file has name")
-                .to_string_lossy()
-                .parse::<u64>()?;
-
-            highest_segment = highest_segment.max(segment_id);
-
-            let segment_file = File::open(segment_path)?;
-            let mut reader = BufReader::new(segment_file);
-
-            // TODO: verify header
-            reader.seek(SeekFrom::Start(WAL_HEADER.len() as u64))?;
-            while let Some(write) = WriteRequest::from_reader(&mut reader) {
-                buffer.insert(write)?;
-            }
-        }
-
-        Ok(highest_segment)
+        Ok(WalReader::new(directory.as_ref(), buffer).read()?)
     }
 }
 
@@ -326,7 +297,6 @@ impl<'a> SegmentReader<'a> {
         segment_path: impl AsRef<Path>,
         buffer: &'a MemBuffer,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        println!("{}", segment_path.as_ref().display());
         let segment_id = segment_path
             .as_ref()
             .file_stem()
