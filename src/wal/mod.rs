@@ -80,7 +80,7 @@ impl WriteRequest {
         let mut namespace_len = [0u8; 8];
         // If we hit an EOF on the namespace, then we can stop reading.
         //
-        // TODO: probably a better way to do this with an WalReader style iterator.
+        // TODO: Elegant way to handle this? This match seems a little clunky
         match r.read_exact(&mut namespace_len) {
             Ok(_) => {
                 let namespace_len = usize::from_be_bytes(namespace_len);
