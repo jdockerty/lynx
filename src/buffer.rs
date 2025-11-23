@@ -106,11 +106,23 @@ impl MemBuffer {
         Ok(())
     }
 
-    pub fn get(
+    /// Return the tables of a [`Namespace`], if any, otherwise [`None`].
+    pub fn tables(
         &self,
         namespace: &Namespace,
     ) -> Option<BTreeMap<Table, BTreeMap<PartitionKey, Measurements>>> {
-        self.inner.lock().unwrap().get(&namespace).cloned()
+        self.inner.lock().unwrap().get(namespace).cloned()
+    }
+
+    /// Return the partitions of a [`Table`] within a [`Namespace`],
+    /// if any, otherwise [`None`].
+    #[allow(dead_code)]
+    pub fn partitions(
+        &self,
+        namespace: &Namespace,
+        table: &Table,
+    ) -> Option<BTreeMap<PartitionKey, Measurements>> {
+        self.tables(namespace)?.get(table).cloned()
     }
 
     /// Return the total number of namespaces currently held.
@@ -186,13 +198,13 @@ mod test {
         );
 
         let hello_tables = buffer
-            .get(&crate::buffer::Namespace("hello".to_string()))
+            .tables(&crate::buffer::Namespace("hello".to_string()))
             .unwrap();
         let hello_partitions = hello_tables.get(&Table("world".to_string())).unwrap();
         assert_eq!(hello_tables.len(), 1);
         assert_eq!(hello_partitions.len(), 2);
         let another_tables = buffer
-            .get(&crate::buffer::Namespace("another".to_string()))
+            .tables(&crate::buffer::Namespace("another".to_string()))
             .unwrap();
         let another_partitions = another_tables.get(&Table("world".to_string())).unwrap();
         assert_eq!(another_tables.len(), 1);

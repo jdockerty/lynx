@@ -41,9 +41,11 @@ pub struct Lynx {
 impl Lynx {
     /// Create a new Lynx instance with the given WAL configuration.
     pub fn new(wal_directory: impl AsRef<Path>, max_segment_size: u64) -> Self {
+        let buffer = MemBuffer::new();
+        let next_segment_id = Wal::replay(wal_directory.as_ref(), &buffer).unwrap() + 1;
         Self {
-            wal: Mutex::new(Wal::new(wal_directory, max_segment_size)),
-            buffer: MemBuffer::new(),
+            wal: Mutex::new(Wal::new(wal_directory, next_segment_id, max_segment_size)),
+            buffer,
             query: Arc::new(SessionContext::new()),
         }
     }
@@ -67,7 +69,7 @@ impl Lynx {
         let table_name = parse_table_name(&sql)?;
         // Get a snapshot of the current in-memory data that
         // will be queryable.
-        let tables = self.buffer.get(&Namespace(namespace.clone()));
+        let tables = self.buffer.tables(&Namespace(namespace.clone()));
 
         match tables {
             Some(tables) => {
@@ -201,8 +203,10 @@ mod tests {
         lynx.write(request1.clone()).unwrap();
         lynx.write(request2).unwrap();
 
-        let tables = lynx.buffer.get(&Namespace("metrics".to_string())).unwrap();
-        let partitions = tables.get(&Table("cpu".to_string())).unwrap().clone();
+        let namespace = Namespace("metrics".to_string());
+        let table = Table("cpu".to_string());
+
+        let partitions = lynx.buffer.partitions(&namespace, &table).unwrap();
         assert_eq!(partitions.len(), 1);
 
         // The above requests are part of the same partition, as
@@ -275,8 +279,13 @@ mod tests {
         lynx.write(request1.clone()).unwrap();
         lynx.write(request2.clone()).unwrap();
 
-        let tables = lynx.buffer.get(&Namespace("events".to_string())).unwrap();
-        let partitions = tables.get(&Table("clicks".to_string())).unwrap();
+        let partitions = lynx
+            .buffer
+            .partitions(
+                &Namespace("events".to_string()),
+                &Table("clicks".to_string()),
+            )
+            .unwrap();
 
         assert_eq!(partitions.len(), 2);
 
