@@ -207,7 +207,7 @@ impl Wal {
         directory: impl AsRef<Path>,
         buffer: &MemBuffer,
     ) -> Result<u64, Box<dyn std::error::Error>> {
-        Ok(WalReader::new(directory.as_ref(), buffer).read()?)
+        WalReader::new(directory.as_ref(), buffer).read()
     }
 }
 

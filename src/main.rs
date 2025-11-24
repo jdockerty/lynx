@@ -1,5 +1,6 @@
 mod buffer;
 mod lynx;
+mod query;
 mod wal;
 
 use axum::{
@@ -10,11 +11,10 @@ use axum::{
     routing::{get, post},
 };
 use clap::Parser;
-use datafusion::arrow::util::pretty::print_batches;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
-use crate::{lynx::Lynx, wal::WriteRequest};
+use crate::{lynx::Lynx, query::QueryResponseAdapter, wal::WriteRequest};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -33,17 +33,19 @@ struct AppState {
     lynx: Lynx,
 }
 
+#[derive(Default, Deserialize)]
+enum OutputFormat {
+    #[default]
+    Json,
+    Table,
+}
+
 #[derive(Deserialize)]
 struct QueryRequest {
     namespace: String,
     query: String,
-}
-
-#[derive(Serialize)]
-#[expect(dead_code)]
-struct QueryResponse {
-    // TODO
-    results: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<OutputFormat>,
 }
 
 async fn health() -> StatusCode {
@@ -67,13 +69,23 @@ async fn query_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<QueryRequest>,
 ) -> impl IntoResponse {
-    let result = state
-        .lynx
-        .query(payload.namespace, payload.query)
-        .await
-        .unwrap();
-    result.map(|b| print_batches(&b));
-    StatusCode::OK
+    match state.lynx.query(payload.namespace, payload.query).await {
+        Ok(Some(batches)) => {
+            let query_adapter = QueryResponseAdapter::new(batches);
+            match payload.format {
+                Some(format) => match format {
+                    OutputFormat::Json => query_adapter.into_json().unwrap().into_response(),
+                    OutputFormat::Table => query_adapter.into_table().unwrap().into_response(),
+                },
+                None => query_adapter.into_table().unwrap().into_response(),
+            }
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            eprintln!("{e:?}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 #[tokio::main]
@@ -90,7 +102,7 @@ async fn main() {
         .route("/api/v1/query", post(query_handler))
         .with_state(state);
 
-    println!("Starting server on {}", args.bind);
+    eprintln!("Starting server on {}", args.bind);
 
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await
