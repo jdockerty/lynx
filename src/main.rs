@@ -67,13 +67,23 @@ async fn query_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<QueryRequest>,
 ) -> impl IntoResponse {
-    let result = state
-        .lynx
-        .query(payload.namespace, payload.query)
-        .await
-        .unwrap();
-    result.map(|b| print_batches(&b));
-    StatusCode::OK
+    match state.lynx.query(payload.namespace, payload.query).await {
+        Ok(Some(batches)) => {
+            print_batches(&batches).unwrap();
+            let buf = Vec::new();
+            let mut writer = datafusion::arrow::json::ArrayWriter::new(buf);
+            for batch in &batches {
+                writer.write(batch).unwrap();
+            }
+            writer.finish().unwrap();
+            writer.into_inner().into_response()
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            eprintln!("{e:?}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 #[tokio::main]
