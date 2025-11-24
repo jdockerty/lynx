@@ -1,5 +1,6 @@
 mod buffer;
 mod lynx;
+mod query;
 mod wal;
 
 use axum::{
@@ -10,11 +11,10 @@ use axum::{
     routing::{get, post},
 };
 use clap::Parser;
-use datafusion::arrow::util::pretty::print_batches;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
-use crate::{lynx::Lynx, wal::WriteRequest};
+use crate::{lynx::Lynx, query::QueryResponseAdapter, wal::WriteRequest};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -33,10 +33,19 @@ struct AppState {
     lynx: Lynx,
 }
 
+#[derive(Default, Deserialize)]
+enum OutputFormat {
+    #[default]
+    Json,
+    Table,
+}
+
 #[derive(Deserialize)]
 struct QueryRequest {
     namespace: String,
     query: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<OutputFormat>,
 }
 
 async fn health() -> StatusCode {
@@ -62,14 +71,14 @@ async fn query_handler(
 ) -> impl IntoResponse {
     match state.lynx.query(payload.namespace, payload.query).await {
         Ok(Some(batches)) => {
-            print_batches(&batches).unwrap();
-            let buf = Vec::new();
-            let mut writer = datafusion::arrow::json::ArrayWriter::new(buf);
-            for batch in &batches {
-                writer.write(batch).unwrap();
+            let query_adapter = QueryResponseAdapter::new(batches);
+            match payload.format {
+                Some(format) => match format {
+                    OutputFormat::Json => query_adapter.into_json().unwrap().into_response(),
+                    OutputFormat::Table => query_adapter.into_table().unwrap().into_response(),
+                },
+                None => query_adapter.into_table().unwrap().into_response(),
             }
-            writer.finish().unwrap();
-            writer.into_inner().into_response()
         }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
