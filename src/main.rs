@@ -39,13 +39,6 @@ struct QueryRequest {
     query: String,
 }
 
-#[derive(Serialize)]
-#[expect(dead_code)]
-struct QueryResponse {
-    // TODO
-    results: Vec<serde_json::Value>,
-}
-
 async fn health() -> StatusCode {
     StatusCode::OK
 }
