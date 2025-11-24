@@ -276,7 +276,7 @@ impl<'a> WalReader<'a> {
                 continue;
             }
 
-            let segment_reader = SegmentReader::new(file.path(), self.buffer)?;
+            let mut segment_reader = SegmentReader::new(file.path(), self.buffer)?;
             highest_segment = highest_segment.max(segment_reader.segment_id);
             segment_reader.read()?;
         }
@@ -290,6 +290,7 @@ struct SegmentReader<'a> {
     segment_path: PathBuf,
     segment_id: u64,
     buffer: &'a MemBuffer,
+    reader: BufReader<File>,
 }
 
 impl<'a> SegmentReader<'a> {
@@ -303,32 +304,48 @@ impl<'a> SegmentReader<'a> {
             .expect("segment file has name")
             .to_string_lossy()
             .parse::<u64>()?;
+
+        let segment_file = File::open(&segment_path)?;
+        let reader = BufReader::new(segment_file);
         Ok(Self {
             segment_path: segment_path.as_ref().to_path_buf(),
             segment_id,
             buffer,
+            reader,
         })
     }
 
-    fn read(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let segment_file = File::open(&self.segment_path)?;
-        let mut reader = BufReader::new(segment_file);
+    fn read(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.verify()?;
 
-        // TODO: verify header
-        reader.seek(SeekFrom::Start(WAL_HEADER.len() as u64))?;
-        while let Some(write) = WriteRequest::from_reader(&mut reader) {
+        // `None` is returned when reaching EOF, so we can break at this point.
+        while let Some(write) = WriteRequest::from_reader(&mut self.reader) {
             self.buffer.insert(write)?;
         }
         Ok(())
+    }
+
+    fn verify(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Always seek to the beginning of the reader,
+        // as this is where the header is located.
+        self.reader.seek(SeekFrom::Start(0))?;
+
+        let mut buf = [0u8; WAL_HEADER.len()];
+        self.reader.read_exact(&mut buf)?;
+
+        let header = String::from_utf8(buf.to_vec())?;
+
+        if &header != WAL_HEADER {
+            Err(format!("segment file must contain header ({WAL_HEADER})").into())
+        } else {
+            Ok(())
+        }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::{
-        collections::HashMap,
-        io::{BufReader, Seek, SeekFrom},
-    };
+    use std::{collections::HashMap, fs::File, io::Write};
 
     use tempfile::TempDir;
 
@@ -341,9 +358,24 @@ mod test {
     fn segment_header() {
         let dir = TempDir::new().unwrap();
         let id = 10;
-        let _segment = Segment::new(id, dir.path());
+        let segment = Segment::new(id, dir.path());
         let contents = std::fs::read(dir.path().join(format!("{id}.wal"))).unwrap();
         assert_eq!(contents, WAL_HEADER.as_bytes());
+
+        let buffer = MemBuffer::new();
+        let segment_path = dir.path().join(format!("{id}.wal"));
+        let mut segment_reader = SegmentReader::new(&segment_path, &buffer).unwrap();
+        assert!(segment_reader.verify().is_ok());
+
+        let next_id = segment.id + 1;
+        let temp_file_path = dir.path().join(format!("{next_id}.wal"));
+        let mut not_lynx_file = File::create_new(&temp_file_path).unwrap();
+        not_lynx_file.write_all(b"not_a_lynx_file").unwrap();
+        let mut segment_reader = SegmentReader::new(&temp_file_path, &buffer).unwrap();
+        assert_eq!(
+            segment_reader.verify().unwrap_err().to_string(),
+            format!("segment file must contain header ({WAL_HEADER})")
+        );
     }
 
     #[test]
@@ -409,16 +441,13 @@ mod test {
         };
         wal.write(write.clone()).unwrap();
 
-        let segment = std::fs::File::open(dir.path().join("0.wal")).unwrap();
-        let mut reader = BufReader::new(segment);
+        let segment_path = dir.path().join("0.wal");
+        let buffer = MemBuffer::new();
+        let mut segment_reader = SegmentReader::new(segment_path, &buffer).unwrap();
 
-        // Skip over the header
-        // TODO: verify the segment is a Lynx WAL file.
-        reader
-            .seek(SeekFrom::Start(WAL_HEADER.len() as u64))
-            .unwrap();
+        assert!(segment_reader.verify().is_ok());
 
-        let read = WriteRequest::from_reader(&mut reader).unwrap();
+        let read = WriteRequest::from_reader(&mut segment_reader.reader).unwrap();
         assert_eq!(read, write);
     }
 
@@ -508,7 +537,7 @@ mod test {
         wal.write(write.clone()).unwrap();
 
         let buffer = MemBuffer::new();
-        let reader = SegmentReader::new(
+        let mut reader = SegmentReader::new(
             dir.path().join(format!("{}.wal", wal.active_segment.id())),
             &buffer,
         )
