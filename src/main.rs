@@ -102,7 +102,7 @@ async fn main() {
         .route("/api/v1/query", post(query_handler))
         .with_state(state);
 
-    println!("Starting server on {}", args.bind);
+    eprintln!("Starting server on {}", args.bind);
 
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await
