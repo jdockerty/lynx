@@ -345,11 +345,7 @@ impl<'a> SegmentReader<'a> {
 
 #[cfg(test)]
 mod test {
-    use std::{
-        collections::HashMap,
-        fs::File,
-        io::{BufReader, Seek, SeekFrom, Write},
-    };
+    use std::{collections::HashMap, fs::File, io::Write};
 
     use tempfile::TempDir;
 
@@ -445,16 +441,13 @@ mod test {
         };
         wal.write(write.clone()).unwrap();
 
-        let segment = File::open(dir.path().join("0.wal")).unwrap();
-        let mut reader = BufReader::new(segment);
+        let segment_path = dir.path().join("0.wal");
+        let buffer = MemBuffer::new();
+        let mut segment_reader = SegmentReader::new(segment_path, &buffer).unwrap();
 
-        // Skip over the header
-        // TODO: verify the segment is a Lynx WAL file.
-        reader
-            .seek(SeekFrom::Start(WAL_HEADER.len() as u64))
-            .unwrap();
+        assert!(segment_reader.verify().is_ok());
 
-        let read = WriteRequest::from_reader(&mut reader).unwrap();
+        let read = WriteRequest::from_reader(&mut segment_reader.reader).unwrap();
         assert_eq!(read, write);
     }
 
