@@ -336,7 +336,7 @@ impl<'a> SegmentReader<'a> {
         let header = String::from_utf8(buf.to_vec())?;
 
         if &header != WAL_HEADER {
-            Err("segment file must contain header".into())
+            Err(format!("segment file must contain header ({WAL_HEADER})").into())
         } else {
             Ok(())
         }
@@ -371,11 +371,15 @@ mod test {
         let mut segment_reader = SegmentReader::new(&segment_path, &buffer).unwrap();
         assert!(segment_reader.verify().is_ok());
 
-        let temp_file_path = dir.path().join(format!("{}.wal", segment.id));
+        let next_id = segment.id + 1;
+        let temp_file_path = dir.path().join(format!("{next_id}.wal"));
         let mut not_lynx_file = File::create_new(&temp_file_path).unwrap();
         not_lynx_file.write_all(b"not_a_lynx_file").unwrap();
         let mut segment_reader = SegmentReader::new(&temp_file_path, &buffer).unwrap();
-        assert!(segment_reader.verify().is_err());
+        assert_eq!(
+            segment_reader.verify().unwrap_err().to_string(),
+            format!("segment file must contain header ({WAL_HEADER})")
+        );
     }
 
     #[test]
