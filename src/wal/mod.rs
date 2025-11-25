@@ -209,6 +209,11 @@ impl Wal {
     ) -> Result<u64, Box<dyn std::error::Error>> {
         WalReader::new(directory.as_ref(), buffer).read()
     }
+
+    /// Return the ID of the active [`Segment`] file.
+    pub fn active_segment_id(&self) -> u64 {
+        self.active_segment.id()
+    }
 }
 
 struct Segment {
