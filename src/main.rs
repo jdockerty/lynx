@@ -1,6 +1,7 @@
 mod buffer;
 mod lynx;
 mod query;
+mod retention;
 mod wal;
 
 use axum::{

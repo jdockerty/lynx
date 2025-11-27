@@ -13,6 +13,7 @@ use datafusion::{
     sql::sqlparser::{dialect::GenericDialect, parser::Parser},
 };
 use serde::Deserialize;
+use tokio::task::JoinHandle;
 
 use crate::{
     buffer::{MemBuffer, Namespace, Table},
@@ -42,10 +43,13 @@ pub struct Lynx {
     /// metadata changes causing contention with the hot-write path.
     metadata: Arc<Mutex<BTreeMap<Namespace, BTreeMap<Table, TableMetadata>>>>,
 
+    /// Background task handle for running retention.
+    retention_handle: Option<JoinHandle<()>>,
+
     query: Arc<SessionContext>,
 }
 
-struct TableMetadata {
+pub(crate) struct TableMetadata {
     retention: Option<Retention>,
 }
 
