@@ -1,11 +1,12 @@
 mod buffer;
 mod lynx;
 mod query;
+mod retention;
 mod wal;
 
 use axum::{
     Router,
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post},
@@ -14,7 +15,12 @@ use clap::Parser;
 use serde::Deserialize;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
-use crate::{lynx::Lynx, query::QueryResponseAdapter, wal::WriteRequest};
+use crate::{
+    buffer::{Namespace, Table},
+    lynx::{Lynx, Retention},
+    query::QueryResponseAdapter,
+    wal::WriteRequest,
+};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -46,6 +52,11 @@ struct QueryRequest {
     query: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     format: Option<OutputFormat>,
+}
+
+#[derive(Deserialize)]
+struct TableManangementRequest {
+    retention: Retention,
 }
 
 async fn health() -> StatusCode {
@@ -88,6 +99,20 @@ async fn query_handler(
     }
 }
 
+async fn table_management_handler(
+    State(state): State<Arc<AppState>>,
+    Path((namespace, table)): Path<(String, String)>,
+    Json(payload): Json<TableManangementRequest>,
+) -> impl IntoResponse {
+    if state
+        .lynx
+        .update_table_retention(&Namespace(namespace), &Table(table), payload.retention)
+    {
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -100,6 +125,10 @@ async fn main() {
         .route("/health", get(health))
         .route("/api/v1/write", post(write_handler))
         .route("/api/v1/query", post(query_handler))
+        .route(
+            "/api/v1/namespaces/{namespace}/tables/{table}",
+            post(table_management_handler),
+        )
         .with_state(state);
 
     eprintln!("Starting server on {}", args.bind);
