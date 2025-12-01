@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, btree_map::Entry},
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -12,6 +12,8 @@ use datafusion::{
     prelude::SessionContext,
     sql::sqlparser::{dialect::GenericDialect, parser::Parser},
 };
+use serde::Deserialize;
+use tokio::task::JoinHandle;
 
 use crate::{
     buffer::{MemBuffer, Namespace, Table},
@@ -35,7 +37,25 @@ pub struct Lynx {
     /// Hierarchical in-memory structure which makes the durable writes queryable.
     buffer: MemBuffer,
 
+    /// Metadata about the namespaces/tables that have been created.
+    ///
+    /// This is intentionally separate from the [`MemBuffer`] to avoid
+    /// metadata changes causing contention with the hot-write path.
+    metadata: Arc<Mutex<BTreeMap<Namespace, BTreeMap<Table, TableMetadata>>>>,
+
+    /// Background task handle for running retention.
+    retention_handle: Option<JoinHandle<()>>,
+
     query: Arc<SessionContext>,
+}
+
+pub(crate) struct TableMetadata {
+    pub(crate) retention: Option<Retention>,
+}
+
+#[derive(Deserialize)]
+pub struct Retention {
+    pub max_age: u64,
 }
 
 impl Lynx {
@@ -46,6 +66,7 @@ impl Lynx {
         Self {
             wal: Mutex::new(Wal::new(wal_directory, next_segment_id, max_segment_size)),
             buffer,
+            metadata: Arc::new(Mutex::new(BTreeMap::new())),
             query: Arc::new(SessionContext::new()),
         }
     }
@@ -140,6 +161,31 @@ impl Lynx {
                 }
             }
             None => Ok(None),
+        }
+    }
+
+    /// Update the [`Retention`] against a [`Table`] within a
+    /// [`Namespace`], returning whether or not an update
+    /// was made.
+    ///
+    /// If `false` is returned, this means that the table
+    /// or namespace does not exist.
+    pub fn update_table_retention(
+        &self,
+        namespace: &Namespace,
+        table: &Table,
+        retention: Retention,
+    ) -> bool {
+        match self.metadata.lock().unwrap().get_mut(namespace) {
+            Some(tables) => tables
+                .insert(
+                    table.clone(),
+                    TableMetadata {
+                        retention: Some(retention),
+                    },
+                )
+                .map_or(false, |_| true),
+            None => false,
         }
     }
 }

@@ -76,7 +76,7 @@ impl WriteRequest {
         data
     }
 
-    fn from_reader(r: &mut impl Read) -> Option<Self> {
+    pub(crate) fn from_reader(r: &mut impl Read) -> Option<Self> {
         let mut namespace_len = [0u8; 8];
         // If we hit an EOF on the namespace, then we can stop reading.
         //
@@ -208,6 +208,11 @@ impl Wal {
         buffer: &MemBuffer,
     ) -> Result<u64, Box<dyn std::error::Error>> {
         WalReader::new(directory.as_ref(), buffer).read()
+    }
+
+    /// Return the ID of the active [`Segment`] file.
+    pub fn active_segment_id(&self) -> u64 {
+        self.active_segment.id()
     }
 }
 
