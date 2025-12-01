@@ -76,7 +76,7 @@ impl WriteRequest {
         data
     }
 
-    fn from_reader(r: &mut impl Read) -> Option<Self> {
+    pub(crate) fn from_reader(r: &mut impl Read) -> Option<Self> {
         let mut namespace_len = [0u8; 8];
         // If we hit an EOF on the namespace, then we can stop reading.
         //

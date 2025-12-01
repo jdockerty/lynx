@@ -50,12 +50,12 @@ pub struct Lynx {
 }
 
 pub(crate) struct TableMetadata {
-    retention: Option<Retention>,
+    pub(crate) retention: Option<Retention>,
 }
 
 #[derive(Deserialize)]
 pub struct Retention {
-    max_age: u64,
+    pub max_age: u64,
 }
 
 impl Lynx {
