@@ -491,6 +491,18 @@ mod test {
         assert_eq!(buffer.partitions(&namespace, &table).unwrap().len(), 1);
     }
 
+    // The WAL replay test asserts that the previously
+    // closed segments are found appropriately.
+    #[test]
+    fn wal_closed_segments() {
+        let dir = TempDir::new().unwrap();
+        let max_segment_size = 1024;
+        let id = 4;
+        let previous_segment_ids = vec![1, 2, 3];
+        let wal = Wal::new(dir.path(), id, max_segment_size, previous_segment_ids);
+        assert_eq!(wal.closed_segments.len(), 3);
+    }
+
     #[test]
     fn wal_reader() {
         let dir = TempDir::new().unwrap();
