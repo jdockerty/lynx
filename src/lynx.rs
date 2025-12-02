@@ -42,9 +42,15 @@ impl Lynx {
     /// Create a new Lynx instance with the given WAL configuration.
     pub fn new(wal_directory: impl AsRef<Path>, max_segment_size: u64) -> Self {
         let buffer = MemBuffer::new();
-        let next_segment_id = Wal::replay(wal_directory.as_ref(), &buffer).unwrap() + 1;
+        let (highest_segment_id, closed_segments) =
+            Wal::replay(wal_directory.as_ref(), &buffer).unwrap();
         Self {
-            wal: Mutex::new(Wal::new(wal_directory, next_segment_id, max_segment_size)),
+            wal: Mutex::new(Wal::new(
+                wal_directory,
+                highest_segment_id + 1,
+                max_segment_size,
+                closed_segments,
+            )),
             buffer,
             query: Arc::new(SessionContext::new()),
         }

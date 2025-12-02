@@ -172,14 +172,21 @@ impl Display for TagValue {
 
 pub struct Wal {
     active_segment: Segment,
+    closed_segments: Vec<u64>,
     max_segment_size: u64,
     directory: PathBuf,
 }
 
 impl Wal {
-    pub fn new(directory: impl AsRef<Path>, segment_id: u64, max_segment_size: u64) -> Self {
+    pub fn new(
+        directory: impl AsRef<Path>,
+        segment_id: u64,
+        max_segment_size: u64,
+        closed_segments: Vec<u64>,
+    ) -> Self {
         Self {
             active_segment: Segment::new(segment_id, &directory),
+            closed_segments,
             directory: directory.as_ref().to_path_buf(),
             max_segment_size,
         }
@@ -206,7 +213,7 @@ impl Wal {
     pub fn replay(
         directory: impl AsRef<Path>,
         buffer: &MemBuffer,
-    ) -> Result<u64, Box<dyn std::error::Error>> {
+    ) -> Result<(u64, Vec<u64>), Box<dyn std::error::Error>> {
         WalReader::new(directory.as_ref(), buffer).read()
     }
 }
@@ -264,11 +271,14 @@ impl<'a> WalReader<'a> {
     }
 
     /// Read encoded values into the [`MemBuffer`], returning
-    /// the highest segment ID that was observed.
-    pub fn read(&self) -> Result<u64, Box<dyn std::error::Error>> {
+    /// the highest segment ID that was observed and a list
+    /// of all closed segments.
+    pub fn read(&self) -> Result<(u64, Vec<u64>), Box<dyn std::error::Error>> {
         let files = std::fs::read_dir(&self.directory)?;
 
         let mut highest_segment = 0;
+
+        let mut observed_segment_ids = Vec::new();
 
         for file in files {
             let file = file?;
@@ -277,11 +287,12 @@ impl<'a> WalReader<'a> {
             }
 
             let mut segment_reader = SegmentReader::new(file.path(), self.buffer)?;
+            observed_segment_ids.push(segment_reader.segment_id);
             highest_segment = highest_segment.max(segment_reader.segment_id);
             segment_reader.read()?;
         }
 
-        Ok(highest_segment)
+        Ok((highest_segment, observed_segment_ids))
     }
 }
 
@@ -408,7 +419,7 @@ mod test {
     #[test]
     fn wal_rotation() {
         let dir = TempDir::new().unwrap();
-        let mut wal = Wal::new(dir.path(), 0, 10);
+        let mut wal = Wal::new(dir.path(), 0, 10, vec![]);
         assert_eq!(wal.active_segment.id(), 0);
 
         let write = WriteRequest {
@@ -431,7 +442,7 @@ mod test {
     #[test]
     fn from_reader() {
         let dir = TempDir::new().unwrap();
-        let mut wal = Wal::new(dir.path(), 0, 10);
+        let mut wal = Wal::new(dir.path(), 0, 10, vec![]);
         let write = WriteRequest {
             namespace: "hello".to_string(),
             measurement: "test".to_string(),
@@ -454,7 +465,7 @@ mod test {
     #[test]
     fn wal_replay() {
         let dir = TempDir::new().unwrap();
-        let mut wal = Wal::new(dir.path(), 1, 10);
+        let mut wal = Wal::new(dir.path(), 1, 10, vec![]);
 
         let write = WriteRequest {
             namespace: "hello".to_string(),
@@ -469,20 +480,33 @@ mod test {
         drop(wal);
 
         let buffer = MemBuffer::new();
-        let segment_id = Wal::replay(dir.path(), &buffer).unwrap();
+        let (segment_id, observed_segment_ids) = Wal::replay(dir.path(), &buffer).unwrap();
         let namespace = Namespace("hello".to_string());
         let table = Table("test".to_string());
 
         assert_eq!(segment_id, 10);
+        assert_eq!(observed_segment_ids.len(), 10);
         assert_eq!(buffer.namespace_count(), 1);
         assert_eq!(buffer.table_count(&namespace).unwrap(), 1);
         assert_eq!(buffer.partitions(&namespace, &table).unwrap().len(), 1);
     }
 
+    // The WAL replay test asserts that the previously
+    // closed segments are found appropriately.
+    #[test]
+    fn wal_closed_segments() {
+        let dir = TempDir::new().unwrap();
+        let max_segment_size = 1024;
+        let id = 4;
+        let previous_segment_ids = vec![1, 2, 3];
+        let wal = Wal::new(dir.path(), id, max_segment_size, previous_segment_ids);
+        assert_eq!(wal.closed_segments.len(), 3);
+    }
+
     #[test]
     fn wal_reader() {
         let dir = TempDir::new().unwrap();
-        let mut wal = Wal::new(dir.path(), 1, 10);
+        let mut wal = Wal::new(dir.path(), 1, 10, vec![]);
 
         let write = WriteRequest {
             namespace: "hello".to_string(),
@@ -498,8 +522,9 @@ mod test {
 
         let buffer = MemBuffer::new();
         let reader = WalReader::new(dir.path(), &buffer);
-        let max_segment_id = reader.read().unwrap();
+        let (max_segment_id, observed_segment_ids) = reader.read().unwrap();
         assert_eq!(max_segment_id, 10);
+        assert_eq!(observed_segment_ids.len(), 10);
 
         assert_eq!(
             buffer
@@ -524,7 +549,7 @@ mod test {
     #[test]
     fn segment_reader() {
         let dir = TempDir::new().unwrap();
-        let mut wal = Wal::new(dir.path(), 1, 10);
+        let mut wal = Wal::new(dir.path(), 1, 10, vec![]);
 
         let write = WriteRequest {
             namespace: "hello".to_string(),
