@@ -362,7 +362,7 @@ impl<'a> SegmentReader<'a> {
 
         let header = String::from_utf8(buf.to_vec())?;
 
-        if &header != WAL_HEADER {
+        if header != WAL_HEADER {
             Err(format!("segment file must contain header ({WAL_HEADER})").into())
         } else {
             Ok(())
