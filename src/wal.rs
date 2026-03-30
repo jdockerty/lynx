@@ -281,12 +281,28 @@ impl<'a> WalReader<'a> {
         let mut observed_segment_ids = Vec::new();
 
         for file in files {
-            let file = file?;
+            let file = match file {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("skipping not a segment: {e:?}");
+                    continue;
+                }
+            };
+
             if file.file_type()?.is_dir() {
                 continue;
             }
 
-            let mut segment_reader = SegmentReader::new(file.path(), self.buffer)?;
+            let mut segment_reader = match SegmentReader::new(file.path(), self.buffer) {
+                Ok(reader) => reader,
+                Err(_) => {
+                    eprintln!(
+                        "skipping file {}, not a segment",
+                        file.file_name().display()
+                    );
+                    continue;
+                }
+            };
             observed_segment_ids.push(segment_reader.segment_id);
             highest_segment = highest_segment.max(segment_reader.segment_id);
             segment_reader.read()?;
@@ -346,7 +362,7 @@ impl<'a> SegmentReader<'a> {
 
         let header = String::from_utf8(buf.to_vec())?;
 
-        if &header != WAL_HEADER {
+        if header != WAL_HEADER {
             Err(format!("segment file must contain header ({WAL_HEADER})").into())
         } else {
             Ok(())
@@ -586,6 +602,42 @@ mod test {
                 .timestamps
                 .len(),
             1,
+        );
+    }
+
+    #[test]
+    fn replay_succeeds_with_arbitrary_files_in_directory() {
+        let dir = TempDir::new().unwrap();
+        let write = WriteRequest {
+            namespace: "hello".to_string(),
+            measurement: "test".to_string(),
+            value: "world".to_string(),
+            metadata: HashMap::new(),
+            timestamp: 100,
+        };
+
+        {
+            let mut wal = Wal::new(dir.path(), 1, 10, vec![]);
+
+            wal.write(write.clone()).unwrap();
+        }
+
+        for i in 0..10 {
+            std::fs::File::create_new(dir.path().join(format!("random-file-{i}.tmp"))).unwrap();
+        }
+
+        let buffer = MemBuffer::new();
+        assert!(Wal::replay(dir.path(), &buffer).is_ok());
+
+        let partitions = buffer
+            .partitions(&Namespace(write.namespace), &Table(write.measurement))
+            .unwrap();
+        assert_eq!(
+            partitions
+                .get(&PartitionKey::new(write.timestamp))
+                .unwrap()
+                .values[0],
+            write.value
         );
     }
 }
